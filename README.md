@@ -31,31 +31,24 @@ azure_kinect_pose_qq_project_v3
 ├── app_window.py
 ├── pose_detector.py
 ├── qq_sender.py
+├── get_my_openid.py
 ├── requirements.txt
-├── .env.example
+├── .env
 └── README.md
 ```
-
-实际运行时，你需要自己创建或保留 `.env` 文件。
 
 ## .env 示例
 
 ```env
 QQ_APP_ID=你的AppID
 QQ_APP_SECRET=你的AppSecret
-QQ_USER_OPENID=你的user_openid
+QQ_USER_OPENID=你的user_openid，可通过get_my_openid.py获取
 ```
 
 ## 安装依赖
 
 ```bash
 python -m pip install -r requirements.txt
-```
-
-如果你的虚拟环境已经装好了 `opencv-python`、`pykinect-azure`、`requests`、`websockets`、`python-dotenv`，通常只需要：
-
-```bash
-python -m pip install PyQt5
 ```
 
 ## 运行
@@ -74,7 +67,7 @@ python main.py
 截图
 ```
 
-兼容旧指令：
+可兼容其他指令，需手动添加，如：
 
 ```text
 开始指令
