@@ -1,20 +1,16 @@
 import math
-import time
 from datetime import datetime
 
-import cv2
 import pykinect_azure as pykinect
 
 
 def make_tracker_config():
     """
     Body Tracking 配置。
-    使用新版 pykinect_azure 的 default_tracker_configuration。
+    默认使用 CPU 模式，最容易跑通。
     """
     tracker_config = pykinect.default_tracker_configuration
     tracker_config.sensor_orientation = pykinect.K4ABT_SENSOR_ORIENTATION_DEFAULT
-
-    # CPU 模式更容易跑通。若你确认 GPU 环境正常，可改成 K4ABT_TRACKER_PROCESSING_MODE_GPU。
     tracker_config.tracker_processing_mode = pykinect.K4ABT_TRACKER_PROCESSING_MODE_CPU
     tracker_config.gpu_device_id = 0
     return tracker_config
@@ -154,11 +150,7 @@ class BodyPoseDetector:
         pykinect.initialize_libraries(track_body=True)
 
         device_config = pykinect.default_configuration
-
-        # 打开彩色摄像头，显示正常摄像机图像
         device_config.color_resolution = pykinect.K4A_COLOR_RESOLUTION_720P
-
-        # Body Tracking 仍然需要深度数据
         device_config.depth_mode = pykinect.K4A_DEPTH_MODE_WFOV_2X2BINNED
         device_config.camera_fps = pykinect.K4A_FRAMES_PER_SECOND_15
 
@@ -202,7 +194,7 @@ class BodyPoseDetector:
                     "pose": pose_text,
                 })
 
-            # 画骨架到 RGB 彩色相机坐标系，避免错位
+            # 画骨架到 RGB 彩色相机坐标系，避免深度图坐标和 RGB 图错位
             color_camera_type = getattr(pykinect, "K4A_CALIBRATION_TYPE_COLOR", 1)
             display_image = body_frame.draw_bodies(display_image, color_camera_type)
 

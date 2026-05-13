@@ -1,44 +1,58 @@
-# Azure Kinect 人体姿态检测与 QQ 监视系统
+# Azure Kinect 人体姿态检测与 QQ 监视系统 v3
 
-## 本版新增功能
+## 功能
 
-1. QQ 发送其他未知指令时，机器人会回复：
-   - 指令错误
-   - 可用指令范本
-2. QQ 发送 `截图` 时：
-   - 程序截取当前左侧窗口画面，也就是正常 RGB 彩色图 + 骨架
-   - 保存到 `screenshots` 文件夹
-   - 通过 QQ 机器人把刚截的图片发送给你
+1. 左侧窗口实时显示 Azure Kinect 正常 RGB 彩色图 + 骨架。
+2. 右侧文字栏显示：
+   - 时间
+   - 检测人数
+   - 每个人的姿态
+   - QQ 监视状态
+3. 四个按钮：
+   - 截图
+   - 退出
+   - 开始QQ监视
+   - 关闭QQ监视
+4. 点击“截图”会保存当前彩色图 + 骨架到 `screenshots` 文件夹。
+5. QQ 发送 `截图` 会触发截图，并通过 QQ 机器人发送刚截的图片。
+6. QQ 发送未知指令时，机器人会回复指令错误和指令范本。
+7. QQ 监视开启后，只要任意一个人的姿态变化，就会通过 QQ 机器人发送：
+   - 检测时间
+   - 检测人数
+   - 每个人的姿态
+8. 无论是 QQ 发 `停止监听`，还是窗口点击“关闭QQ监视”，机器人都会发送反馈消息。
+9. 无论是 QQ 发 `开始监听`，还是窗口点击“开始QQ监视”，机器人都会发送反馈消息。
 
 ## 文件结构
 
 ```text
-azure_kinect_pose_qq_project_v2
+azure_kinect_pose_qq_project_v3
 ├── main.py
 ├── app_window.py
 ├── pose_detector.py
 ├── qq_sender.py
 ├── requirements.txt
-├── README.md
-├── get_my_openid.py
-└── .env
+├── .env.example
+└── README.md
 ```
+
+实际运行时，你需要自己创建或保留 `.env` 文件。
 
 ## .env 示例
 
 ```env
 QQ_APP_ID=你的AppID
 QQ_APP_SECRET=你的AppSecret
-QQ_USER_OPENID=你的user_openid，可通过get_my_openid.py获取
+QQ_USER_OPENID=你的user_openid
 ```
 
 ## 安装依赖
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-如果你当前虚拟环境已经装过 `opencv-python`、`pykinect-azure`、`requests`、`websockets`、`python-dotenv`，一般只需要额外确认：
+如果你的虚拟环境已经装好了 `opencv-python`、`pykinect-azure`、`requests`、`websockets`、`python-dotenv`，通常只需要：
 
 ```bash
 python -m pip install PyQt5
@@ -52,25 +66,22 @@ python main.py
 
 ## QQ 指令
 
+推荐使用：
+
 ```text
 开始监听
-```
-
-开启 QQ 姿态监视。开启后，只要任意一个人的姿态变化，就会发送当前检测时间、人数和每个人姿态。
-
-```text
 停止监听
-```
-
-关闭 QQ 姿态监视。程序不退出，只是停止发送姿态变化。
-
-```text
 截图
 ```
 
-截取当前摄像机 RGB 图 + 骨架，并通过 QQ 发给你。
+兼容旧指令：
 
-其他任何非空指令都会回复：
+```text
+开始指令
+结束指令
+```
+
+未知指令会回复：
 
 ```text
 指令错误。

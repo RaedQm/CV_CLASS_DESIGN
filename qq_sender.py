@@ -14,9 +14,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-START_COMMAND = "开始监听"
-STOP_COMMAND = "停止监听"
-SCREENSHOT_COMMAND = "截图"
+# 主指令
+START_COMMANDS = {"开始监听"}
+STOP_COMMANDS = {"停止监听"}
+SCREENSHOT_COMMANDS = {"截图"}
 
 COMMAND_TEMPLATE = (
     "指令错误。\n"
@@ -35,8 +36,8 @@ class QQController:
     1. send_text(text)：给 .env 中 QQ_USER_OPENID 对应的用户发送单聊文本
     2. send_image(image_path)：给 .env 中 QQ_USER_OPENID 对应的用户发送本地图片
     3. start_command_listener()：后台监听 QQ 私聊指令
-       - 开始监听：调用 on_start
-       - 停止监听：调用 on_stop
+       - 开始监听 / 开始指令：调用 on_start
+       - 停止监听 / 结束指令：调用 on_stop
        - 截图：调用 on_screenshot
        - 其他指令：回复指令错误和指令范本
 
@@ -312,21 +313,19 @@ class QQController:
         """
         处理用户发来的 QQ 指令。
         """
-        if content == START_COMMAND:
-            self.log("收到 QQ 开始监听。")
+        if content in START_COMMANDS:
+            self.log("收到 QQ 开始监听指令。")
             if self.on_start:
                 self.on_start()
-            await self.reply_text("QQ 姿态监视已开启。")
             return
 
-        if content == STOP_COMMAND:
-            self.log("收到 QQ 停止监听。")
+        if content in STOP_COMMANDS:
+            self.log("收到 QQ 停止监听指令。")
             if self.on_stop:
                 self.on_stop()
-            await self.reply_text("QQ 姿态监视已关闭。")
             return
 
-        if content == SCREENSHOT_COMMAND:
+        if content in SCREENSHOT_COMMANDS:
             self.log("收到 QQ 截图指令。")
             if self.on_screenshot:
                 self.on_screenshot()

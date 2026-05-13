@@ -1,4 +1,3 @@
-import os
 import time
 import threading
 from pathlib import Path
@@ -131,7 +130,7 @@ class MainWindow(QWidget):
             )
             self.qq_controller.start_command_listener()
             self.append_log("QQ 功能初始化成功。")
-            self.append_log("QQ 可用指令：开始指令 / 结束指令 / 截图。")
+            self.append_log("QQ 可用指令：开始监听 / 停止监听 / 截图。")
         except Exception as e:
             self.qq_controller = None
             self.append_log(f"QQ 功能初始化失败：{e}")
@@ -217,8 +216,8 @@ class MainWindow(QWidget):
         lines.append(f"QQ监视状态：{'开启' if self.qq_monitor_enabled else '关闭'}")
         lines.append("")
         lines.append("QQ控制指令：")
-        lines.append("开始指令：开启 QQ 姿态监视")
-        lines.append("结束指令：关闭 QQ 姿态监视")
+        lines.append("开始监听：开启 QQ 姿态监视")
+        lines.append("停止监听：关闭 QQ 姿态监视")
         lines.append("截图：保存当前画面并发送到 QQ")
 
         self.info_text.setPlainText("\n".join(lines))
@@ -285,18 +284,54 @@ class MainWindow(QWidget):
         except Exception as e:
             self.bridge.log_signal.emit(f"QQ发送失败：{e}")
 
-    def enable_qq_monitor(self, source="按钮"):
-        self.qq_monitor_enabled = True
+    def send_qq_feedback(self, text):
+        """
+        给 QQ 发送反馈消息。
+        QQ 指令触发和窗口按钮触发都会走这里，避免重复逻辑。
+        """
+        if not self.qq_controller:
+            return
 
-        # 设为 None：开启监视后，下一帧检测到人体就会发送一次当前姿态。
+        thread = threading.Thread(
+            target=self.send_qq_feedback_background,
+            args=(text,),
+            daemon=True
+        )
+        thread.start()
+
+    def send_qq_feedback_background(self, text):
+        try:
+            status_code, result = self.qq_controller.send_text(text)
+            self.bridge.log_signal.emit(
+                f"QQ反馈发送完成，HTTP状态码：{status_code}，返回：{result}"
+            )
+        except Exception as e:
+            self.bridge.log_signal.emit(f"QQ反馈发送失败：{e}")
+
+    def enable_qq_monitor(self, source="按钮"):
+        already_open = self.qq_monitor_enabled
+
+        self.qq_monitor_enabled = True
         self.last_qq_pose_state = None
         self.last_qq_send_time = 0
 
         self.append_log(f"QQ监视已开启，来源：{source}")
 
+        if already_open:
+            self.send_qq_feedback("QQ监视已经是开启状态。")
+        else:
+            self.send_qq_feedback("QQ监视已开启。")
+
     def disable_qq_monitor(self, source="按钮"):
+        already_closed = not self.qq_monitor_enabled
+
         self.qq_monitor_enabled = False
         self.append_log(f"QQ监视已关闭，来源：{source}")
+
+        if already_closed:
+            self.send_qq_feedback("QQ监视本来就是关闭状态。")
+        else:
+            self.send_qq_feedback("QQ监视已关闭。")
 
     def append_log(self, text):
         print(text)
@@ -342,10 +377,7 @@ class MainWindow(QWidget):
         path = self.save_screenshot_to_file()
 
         if path is None:
-            threading.Thread(
-                target=lambda: self.qq_controller.send_text("截图失败：当前还没有可保存的摄像头画面。"),
-                daemon=True
-            ).start()
+            self.send_qq_feedback("截图失败：当前还没有可保存的摄像头画面。")
             return
 
         self.append_log(f"QQ 截图已保存：{path}")
