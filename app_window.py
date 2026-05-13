@@ -53,6 +53,7 @@ class CameraWorker(QThread):
 class CommandBridge(QObject):
     start_monitor_signal = pyqtSignal()
     stop_monitor_signal = pyqtSignal()
+    screenshot_signal = pyqtSignal()
     log_signal = pyqtSignal(str)
 
 
@@ -75,6 +76,7 @@ class MainWindow(QWidget):
         self.bridge = CommandBridge()
         self.bridge.start_monitor_signal.connect(lambda: self.enable_qq_monitor("QQ指令"))
         self.bridge.stop_monitor_signal.connect(lambda: self.disable_qq_monitor("QQ指令"))
+        self.bridge.screenshot_signal.connect(self.handle_qq_screenshot_request)
         self.bridge.log_signal.connect(self.append_log)
 
         self.init_ui()
@@ -101,7 +103,7 @@ class MainWindow(QWidget):
             btn.setMinimumHeight(46)
             btn.setStyleSheet("font-size: 16px;")
 
-        self.btn_screenshot.clicked.connect(self.save_screenshot)
+        self.btn_screenshot.clicked.connect(self.save_screenshot_by_button)
         self.btn_exit.clicked.connect(self.close)
         self.btn_start_qq.clicked.connect(lambda: self.enable_qq_monitor("按钮"))
         self.btn_stop_qq.clicked.connect(lambda: self.disable_qq_monitor("按钮"))
@@ -124,10 +126,12 @@ class MainWindow(QWidget):
             self.qq_controller = QQController(
                 on_start=lambda: self.bridge.start_monitor_signal.emit(),
                 on_stop=lambda: self.bridge.stop_monitor_signal.emit(),
+                on_screenshot=lambda: self.bridge.screenshot_signal.emit(),
                 on_log=lambda text: self.bridge.log_signal.emit(text)
             )
             self.qq_controller.start_command_listener()
-            self.append_log("QQ 功能初始化成功。发送“开始指令”或“结束指令”可控制监视。")
+            self.append_log("QQ 功能初始化成功。")
+            self.append_log("QQ 可用指令：开始指令 / 结束指令 / 截图。")
         except Exception as e:
             self.qq_controller = None
             self.append_log(f"QQ 功能初始化失败：{e}")
@@ -190,7 +194,7 @@ class MainWindow(QWidget):
         self.image_label.setPixmap(pixmap)
 
         self.update_info_text(info)
-        self.handle_qq_sending(info)
+        self.handle_qq_pose_sending(info)
 
     def update_info_text(self, info):
         timestamp = info["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
@@ -213,8 +217,9 @@ class MainWindow(QWidget):
         lines.append(f"QQ监视状态：{'开启' if self.qq_monitor_enabled else '关闭'}")
         lines.append("")
         lines.append("QQ控制指令：")
-        lines.append("开始指令")
-        lines.append("结束指令")
+        lines.append("开始指令：开启 QQ 姿态监视")
+        lines.append("结束指令：关闭 QQ 姿态监视")
+        lines.append("截图：保存当前画面并发送到 QQ")
 
         self.info_text.setPlainText("\n".join(lines))
 
@@ -238,7 +243,7 @@ class MainWindow(QWidget):
 
         return "\n".join(lines)
 
-    def handle_qq_sending(self, info):
+    def handle_qq_pose_sending(self, info):
         if not self.qq_monitor_enabled:
             return
 
@@ -289,29 +294,19 @@ class MainWindow(QWidget):
 
         self.append_log(f"QQ监视已开启，来源：{source}")
 
-        if self.qq_controller and source == "QQ指令":
-            threading.Thread(
-                target=lambda: self.qq_controller.send_text("QQ监视已开启。"),
-                daemon=True
-            ).start()
-
     def disable_qq_monitor(self, source="按钮"):
         self.qq_monitor_enabled = False
         self.append_log(f"QQ监视已关闭，来源：{source}")
 
-        if self.qq_controller and source == "QQ指令":
-            threading.Thread(
-                target=lambda: self.qq_controller.send_text("QQ监视已关闭。"),
-                daemon=True
-            ).start()
-
     def append_log(self, text):
         print(text)
 
-    def save_screenshot(self):
+    def save_screenshot_to_file(self):
+        """
+        保存当前彩色图 + 骨架截图，返回 Path。
+        """
         if self.current_frame is None:
-            QMessageBox.warning(self, "截图失败", "当前还没有可保存的摄像头画面。")
-            return
+            return None
 
         screenshots_dir = Path(__file__).resolve().parent / "screenshots"
         screenshots_dir.mkdir(exist_ok=True)
@@ -321,11 +316,58 @@ class MainWindow(QWidget):
 
         ok = cv2.imwrite(str(path), self.current_frame)
 
-        if ok:
-            QMessageBox.information(self, "截图成功", f"截图已保存：\n{path}")
-            self.append_log(f"截图已保存：{path}")
-        else:
-            QMessageBox.warning(self, "截图失败", "cv2.imwrite 保存失败。")
+        if not ok:
+            return None
+
+        return path
+
+    def save_screenshot_by_button(self):
+        path = self.save_screenshot_to_file()
+
+        if path is None:
+            QMessageBox.warning(self, "截图失败", "当前还没有可保存的摄像头画面，或保存失败。")
+            return
+
+        QMessageBox.information(self, "截图成功", f"截图已保存：\n{path}")
+        self.append_log(f"截图已保存：{path}")
+
+    def handle_qq_screenshot_request(self):
+        """
+        QQ 收到“截图”指令后触发。
+        注意：这个函数在 Qt 主线程执行，可以安全访问 current_frame。
+        """
+        if not self.qq_controller:
+            return
+
+        path = self.save_screenshot_to_file()
+
+        if path is None:
+            threading.Thread(
+                target=lambda: self.qq_controller.send_text("截图失败：当前还没有可保存的摄像头画面。"),
+                daemon=True
+            ).start()
+            return
+
+        self.append_log(f"QQ 截图已保存：{path}")
+
+        thread = threading.Thread(
+            target=self.send_qq_screenshot_background,
+            args=(path,),
+            daemon=True
+        )
+        thread.start()
+
+    def send_qq_screenshot_background(self, path):
+        try:
+            self.qq_controller.send_text(f"截图成功，正在发送图片：{path.name}")
+            status_code, result = self.qq_controller.send_image(path)
+            self.bridge.log_signal.emit(f"QQ截图发送完成，HTTP状态码：{status_code}，返回：{result}")
+        except Exception as e:
+            self.bridge.log_signal.emit(f"QQ截图发送失败：{e}")
+            try:
+                self.qq_controller.send_text(f"截图已保存，但图片发送失败：{e}")
+            except Exception:
+                pass
 
     def closeEvent(self, event):
         try:
