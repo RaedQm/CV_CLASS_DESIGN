@@ -284,7 +284,7 @@ class MainWindow(QWidget):
         else:
             for item in fall_people:
                 lines.append(
-                    f"人物{item['person_index']}（ID:{item['body_id']}）：{item['pose']}"
+                    f"人物{item['person_index']}：{item['pose']}"
                 )
 
         lines.append("")
