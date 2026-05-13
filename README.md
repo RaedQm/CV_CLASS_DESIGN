@@ -33,7 +33,8 @@ azure_kinect_pose_qq_project
 ├── qq_sender.py
 ├── requirements.txt
 ├── README.md
-└── .env  需要你自己创建
+├── get_my_openid.py
+└── .env  
 ```
 
 ## .env 示例
@@ -41,7 +42,7 @@ azure_kinect_pose_qq_project
 ```env
 QQ_APP_ID=你的AppID
 QQ_APP_SECRET=你的AppSecret
-QQ_USER_OPENID=你的user_openid
+QQ_USER_OPENID=你的user_openid，可通过get_my_openid.py获取
 ```
 
 ## 安装依赖
