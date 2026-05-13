@@ -1,4 +1,25 @@
-# Azure Kinect 人体姿态检测与 QQ 监视系统 v3
+# Azure Kinect 人体姿态检测与 QQ 监视系统 v4
+
+## 新增功能：跌倒自动报警
+
+这一版增加了自动跌倒报警：
+
+- 即使你没有开启 QQ 监听/监视，只要程序检测到人物姿态为 `疑似跌倒`，也会自动触发报警。
+- 程序会自动截图当前 RGB 彩色图 + 骨架。
+- 机器人会给你发送提示：
+
+```text
+检测到人物摔倒，请打开监听查看详细情况。
+```
+
+- 机器人随后发送刚截下来的图片。
+- 这个功能不会自动开启监听。
+- 开启和关闭监听的方式仍然不变：
+  - QQ 发 `开始监听`
+  - QQ 发 `停止监听`
+  - 或者点击窗口按钮
+
+为避免刷屏，同一段连续跌倒只报警一次；恢复正常后才允许下一次报警。代码里还有 30 秒冷却时间。
 
 ## 功能
 
@@ -8,6 +29,7 @@
    - 检测人数
    - 每个人的姿态
    - QQ 监视状态
+   - 跌倒报警状态
 3. 四个按钮：
    - 截图
    - 退出
@@ -22,33 +44,41 @@
    - 每个人的姿态
 8. 无论是 QQ 发 `停止监听`，还是窗口点击“关闭QQ监视”，机器人都会发送反馈消息。
 9. 无论是 QQ 发 `开始监听`，还是窗口点击“开始QQ监视”，机器人都会发送反馈消息。
+10. 即使 QQ 监视关闭，疑似跌倒也会自动截图并发送 QQ 报警。
 
 ## 文件结构
 
 ```text
-azure_kinect_pose_qq_project_v3
+azure_kinect_pose_qq_project_v4
 ├── main.py
 ├── app_window.py
 ├── pose_detector.py
 ├── qq_sender.py
-├── get_my_openid.py
 ├── requirements.txt
-├── .env
+├── .env.example
 └── README.md
 ```
+
+实际运行时，你需要自己创建或保留 `.env` 文件。
 
 ## .env 示例
 
 ```env
 QQ_APP_ID=你的AppID
 QQ_APP_SECRET=你的AppSecret
-QQ_USER_OPENID=你的user_openid，可通过get_my_openid.py获取
+QQ_USER_OPENID=你的user_openid
 ```
 
 ## 安装依赖
 
 ```bash
 python -m pip install -r requirements.txt
+```
+
+如果你的虚拟环境已经装好了 `opencv-python`、`pykinect-azure`、`requests`、`websockets`、`python-dotenv`，通常只需要：
+
+```bash
+python -m pip install PyQt5
 ```
 
 ## 运行
@@ -67,7 +97,7 @@ python main.py
 截图
 ```
 
-可兼容其他指令，需手动添加，如：
+兼容旧指令：
 
 ```text
 开始指令
@@ -96,6 +126,18 @@ QQ_SEND_MIN_INTERVAL_SECONDS = 3.0
 
 ```python
 QQ_SEND_MIN_INTERVAL_SECONDS = 0
+```
+
+跌倒报警冷却时间：
+
+```python
+FALL_ALERT_COOLDOWN_SECONDS = 30.0
+```
+
+默认 30 秒内不会重复触发跌倒报警。想更敏感可以调小，例如：
+
+```python
+FALL_ALERT_COOLDOWN_SECONDS = 10.0
 ```
 
 `pose_detector.py` 默认使用 CPU 模式：

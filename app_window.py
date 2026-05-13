@@ -16,6 +16,12 @@ from qq_sender import QQController
 
 QQ_SEND_MIN_INTERVAL_SECONDS = 3.0
 
+# 跌倒报警冷却时间，避免同一次跌倒持续多帧时疯狂截图和发 QQ。
+FALL_ALERT_COOLDOWN_SECONDS = 30.0
+
+# 跌倒报警提示语。注意：这不会自动开启监听。
+FALL_ALERT_TEXT = "检测到人物摔倒，请打开监听查看详细情况。"
+
 
 class CameraWorker(QThread):
     frame_ready = pyqtSignal(object, dict)
@@ -69,6 +75,12 @@ class MainWindow(QWidget):
         self.qq_monitor_enabled = False
         self.last_qq_pose_state = None
         self.last_qq_send_time = 0
+
+        # 跌倒报警状态。
+        # fall_alert_active=True 表示当前已经处在一段跌倒报警状态中；
+        # 只有检测结果恢复为非跌倒后，才会允许下一次跌倒重新触发。
+        self.fall_alert_active = False
+        self.last_fall_alert_time = 0
 
         self.qq_controller = None
 
@@ -131,6 +143,7 @@ class MainWindow(QWidget):
             self.qq_controller.start_command_listener()
             self.append_log("QQ 功能初始化成功。")
             self.append_log("QQ 可用指令：开始监听 / 停止监听 / 截图。")
+            self.append_log("跌倒报警已启用：即使未开启监听，检测到疑似跌倒也会自动截图并发送 QQ。")
         except Exception as e:
             self.qq_controller = None
             self.append_log(f"QQ 功能初始化失败：{e}")
@@ -193,7 +206,13 @@ class MainWindow(QWidget):
         self.image_label.setPixmap(pixmap)
 
         self.update_info_text(info)
+
+        # 普通姿态变化发送：只有开启 QQ 监视后才发送。
         self.handle_qq_pose_sending(info)
+
+        # 跌倒报警：即使没开启 QQ 监视，也会自动截图并发送。
+        # 但它不会自动开启 QQ 监视。
+        self.handle_fall_alert(info)
 
     def update_info_text(self, info):
         timestamp = info["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
@@ -214,11 +233,14 @@ class MainWindow(QWidget):
 
         lines.append("")
         lines.append(f"QQ监视状态：{'开启' if self.qq_monitor_enabled else '关闭'}")
+        lines.append(f"跌倒报警状态：{'已触发，等待恢复' if self.fall_alert_active else '待命'}")
         lines.append("")
         lines.append("QQ控制指令：")
         lines.append("开始监听：开启 QQ 姿态监视")
         lines.append("停止监听：关闭 QQ 姿态监视")
         lines.append("截图：保存当前画面并发送到 QQ")
+        lines.append("")
+        lines.append("说明：疑似跌倒会自动报警，但不会自动开启 QQ 监视。")
 
         self.info_text.setPlainText("\n".join(lines))
 
@@ -239,6 +261,35 @@ class MainWindow(QWidget):
                 lines.append(
                     f"人物{item['person_index']}（ID:{item['body_id']}）：{item['pose']}"
                 )
+
+        return "\n".join(lines)
+
+    def build_fall_alert_message(self, info):
+        timestamp = info["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+        fall_people = [
+            item for item in info["poses"]
+            if item["pose"] == "疑似跌倒"
+        ]
+
+        lines = [
+            "【Azure Kinect 跌倒报警】",
+            FALL_ALERT_TEXT,
+            f"检测时间：{timestamp}",
+            f"检测人数：{info['num_bodies']}",
+            "疑似跌倒对象："
+        ]
+
+        if not fall_people:
+            lines.append("未知")
+        else:
+            for item in fall_people:
+                lines.append(
+                    f"人物{item['person_index']}（ID:{item['body_id']}）：{item['pose']}"
+                )
+
+        lines.append("")
+        lines.append("注意：本报警不会自动开启监听。")
+        lines.append("你可以发送“开始监听”来查看后续详细姿态变化。")
 
         return "\n".join(lines)
 
@@ -276,6 +327,70 @@ class MainWindow(QWidget):
             daemon=True
         )
         thread.start()
+
+    def handle_fall_alert(self, info):
+        """
+        跌倒自动报警逻辑。
+
+        关键点：
+        1. 不管 QQ 监视是否开启，只要检测到“疑似跌倒”就报警。
+        2. 报警会自动截图并通过 QQ 发送截图。
+        3. 报警不会自动开启监听。
+        4. 同一段连续跌倒只报警一次；恢复正常后才允许下次报警。
+        5. 额外加入冷却时间，避免误识别抖动导致频繁报警。
+        """
+        if not self.qq_controller:
+            return
+
+        poses = info.get("poses", [])
+        any_fall = any(item["pose"] == "疑似跌倒" for item in poses)
+
+        if not any_fall:
+            self.fall_alert_active = False
+            return
+
+        now = time.time()
+
+        # 已经在一段连续跌倒报警状态中，不重复报警。
+        if self.fall_alert_active:
+            return
+
+        # 冷却时间内，不重复报警。
+        if now - self.last_fall_alert_time < FALL_ALERT_COOLDOWN_SECONDS:
+            return
+
+        self.fall_alert_active = True
+        self.last_fall_alert_time = now
+
+        path = self.save_screenshot_to_file()
+        message = self.build_fall_alert_message(info)
+
+        thread = threading.Thread(
+            target=self.send_fall_alert_background,
+            args=(message, path),
+            daemon=True
+        )
+        thread.start()
+
+    def send_fall_alert_background(self, message, image_path):
+        try:
+            self.qq_controller.send_text(message)
+
+            if image_path is not None:
+                status_code, result = self.qq_controller.send_image(image_path)
+                self.bridge.log_signal.emit(
+                    f"跌倒报警截图发送完成，HTTP状态码：{status_code}，返回：{result}"
+                )
+            else:
+                self.qq_controller.send_text("跌倒报警截图失败：当前没有可保存的摄像头画面。")
+
+            self.bridge.log_signal.emit("跌倒报警已发送。")
+        except Exception as e:
+            self.bridge.log_signal.emit(f"跌倒报警发送失败：{e}")
+            try:
+                self.qq_controller.send_text(f"检测到疑似跌倒，但报警截图发送失败：{e}")
+            except Exception:
+                pass
 
     def send_qq_message_background(self, message):
         try:
