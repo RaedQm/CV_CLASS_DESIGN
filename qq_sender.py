@@ -15,8 +15,8 @@ load_dotenv()
 
 
 # 主指令
-START_COMMANDS = {"开始监听", "开始指令"}
-STOP_COMMANDS = {"停止监听", "结束指令"}
+START_COMMANDS = {"开始监听"}
+STOP_COMMANDS = {"停止监听"}
 SCREENSHOT_COMMANDS = {"截图"}
 
 COMMAND_TEMPLATE = (
