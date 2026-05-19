@@ -11,7 +11,8 @@ def make_tracker_config():
     """
     tracker_config = pykinect.default_tracker_configuration
     tracker_config.sensor_orientation = pykinect.K4ABT_SENSOR_ORIENTATION_DEFAULT
-    tracker_config.tracker_processing_mode = pykinect.K4ABT_TRACKER_PROCESSING_MODE_CPU
+    # tracker_config.tracker_processing_mode = pykinect.K4ABT_TRACKER_PROCESSING_MODE_CPU
+    tracker_config.tracker_processing_mode = pykinect.K4ABT_TRACKER_PROCESSING_MODE_GPU
     tracker_config.gpu_device_id = 0
     return tracker_config
 

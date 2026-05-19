@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
 
 from pose_detector import BodyPoseDetector
 from qq_sender import QQController
+from live_stream_manager import LiveStreamManager
 
 
 QQ_SEND_MIN_INTERVAL_SECONDS = 3.0
@@ -59,6 +60,8 @@ class CommandBridge(QObject):
     start_monitor_signal = pyqtSignal()
     stop_monitor_signal = pyqtSignal()
     screenshot_signal = pyqtSignal()
+    live_start_signal = pyqtSignal()
+    live_stop_signal = pyqtSignal()
     log_signal = pyqtSignal(str)
 
 
@@ -84,10 +87,20 @@ class MainWindow(QWidget):
 
         self.qq_controller = None
 
+        # 直播管理器：QQ 发送“直播”后启动，发送“结束直播”后停止。
+        self.live_stream_running = False
+        self.live_stream_info = None
+        self.live_manager = LiveStreamManager(
+            on_log=lambda text: self.bridge.log_signal.emit(text)
+            if hasattr(self, "bridge") else print(text)
+        )
+
         self.bridge = CommandBridge()
         self.bridge.start_monitor_signal.connect(lambda: self.enable_qq_monitor("QQ指令"))
         self.bridge.stop_monitor_signal.connect(lambda: self.disable_qq_monitor("QQ指令"))
         self.bridge.screenshot_signal.connect(self.handle_qq_screenshot_request)
+        self.bridge.live_start_signal.connect(lambda: self.start_live_stream("QQ指令"))
+        self.bridge.live_stop_signal.connect(lambda: self.stop_live_stream("QQ指令"))
         self.bridge.log_signal.connect(self.append_log)
 
         self.init_ui()
@@ -138,11 +151,13 @@ class MainWindow(QWidget):
                 on_start=lambda: self.bridge.start_monitor_signal.emit(),
                 on_stop=lambda: self.bridge.stop_monitor_signal.emit(),
                 on_screenshot=lambda: self.bridge.screenshot_signal.emit(),
+                on_live_start=lambda: self.bridge.live_start_signal.emit(),
+                on_live_stop=lambda: self.bridge.live_stop_signal.emit(),
                 on_log=lambda text: self.bridge.log_signal.emit(text)
             )
             self.qq_controller.start_command_listener()
             self.append_log("QQ 功能初始化成功。")
-            self.append_log("QQ 可用指令：开始监听 / 停止监听 / 截图。")
+            self.append_log("QQ 可用指令：开始监听 / 停止监听 / 截图 / 直播 / 结束直播。")
             self.append_log("跌倒报警已启用：即使未开启监听，检测到疑似跌倒也会自动截图并发送 QQ。")
         except Exception as e:
             self.qq_controller = None
@@ -202,6 +217,10 @@ class MainWindow(QWidget):
         self.current_frame = frame.copy()
         self.current_info = info
 
+        # 如果直播已启动，则把当前“彩色图 + 骨架”帧写入 FFmpeg。
+        if self.live_manager:
+            self.live_manager.write_frame(frame)
+
         pixmap = self.cv_image_to_qpixmap(frame)
         self.image_label.setPixmap(pixmap)
 
@@ -233,12 +252,17 @@ class MainWindow(QWidget):
 
         lines.append("")
         lines.append(f"QQ监视状态：{'开启' if self.qq_monitor_enabled else '关闭'}")
+        lines.append(f"直播状态：{'开启' if self.live_stream_running else '关闭'}")
+        if self.live_stream_info:
+            lines.append(f"直播地址：{self.live_stream_info.get('watch_url', '')}")
         lines.append(f"跌倒报警状态：{'已触发，等待恢复' if self.fall_alert_active else '待命'}")
         lines.append("")
         lines.append("QQ控制指令：")
         lines.append("开始监听：开启 QQ 姿态监视")
         lines.append("停止监听：关闭 QQ 姿态监视")
         lines.append("截图：保存当前画面并发送到 QQ")
+        lines.append("直播：开启 H.264 直播并返回公网观看地址")
+        lines.append("结束直播：停止 H.264 直播")
         lines.append("")
         lines.append("说明：疑似跌倒会自动报警，但不会自动开启 QQ 监视。")
 
@@ -516,6 +540,106 @@ class MainWindow(QWidget):
             except Exception:
                 pass
 
+    def build_live_started_message(self, result):
+        """
+        生成直播启动成功后发送给 QQ 的消息。
+        """
+        if result.get("already_running"):
+            title = "【Azure Kinect 直播】\n直播已经在运行。"
+        else:
+            title = "【Azure Kinect 直播】\n开始直播。"
+
+        return (
+            f"{title}\n"
+            f"观看地址：{result.get('watch_url')}\n"
+            f"用户名：{result.get('username')}\n"
+            f"临时密钥：{result.get('password')}\n\n"
+            "说明：浏览器打开观看地址后，会弹出登录框；输入上面的用户名和临时密钥即可观看。"
+        )
+
+    def start_live_stream(self, source="QQ指令"):
+        """
+        开启直播。
+        QQ 发送“直播”会触发这里。
+        """
+        if not self.qq_controller:
+            self.append_log("QQ 未初始化，无法发送直播地址。")
+            return
+
+        thread = threading.Thread(
+            target=self.start_live_stream_background,
+            args=(source,),
+            daemon=True
+        )
+        thread.start()
+
+    def start_live_stream_background(self, source):
+        try:
+            result = self.live_manager.start()
+            self.live_stream_running = True
+            self.live_stream_info = result
+
+            message = self.build_live_started_message(result)
+            self.qq_controller.send_text(message)
+
+            self.bridge.log_signal.emit(
+                f"直播启动完成，来源：{source}，地址：{result.get('watch_url')}"
+            )
+        except Exception as e:
+            self.live_stream_running = False
+            self.live_stream_info = None
+            error_msg = (
+                "【Azure Kinect 直播】\n"
+                f"直播启动失败：{e}\n\n"
+                "请检查：\n"
+                "1. MEDIAMTX_PATH 是否正确，或 mediamtx 是否已加入 Path。\n"
+                "2. ffmpeg -version 是否可用。\n"
+                "3. ngrok 是否已登录并可运行。\n"
+                "4. MediaMTX 的 8888 和 1935 端口是否被占用。"
+            )
+            self.bridge.log_signal.emit(f"直播启动失败：{e}")
+            try:
+                self.qq_controller.send_text(error_msg)
+            except Exception:
+                pass
+
+    def stop_live_stream(self, source="QQ指令"):
+        """
+        停止直播。
+        QQ 发送“结束直播”会触发这里。
+        """
+        if not self.qq_controller:
+            self.append_log("QQ 未初始化，无法发送直播停止反馈。")
+            return
+
+        thread = threading.Thread(
+            target=self.stop_live_stream_background,
+            args=(source,),
+            daemon=True
+        )
+        thread.start()
+
+    def stop_live_stream_background(self, source):
+        try:
+            was_running = self.live_manager.stop()
+            self.live_stream_running = False
+            self.live_stream_info = None
+
+            if was_running:
+                message = "【Azure Kinect 直播】\n直播已停止。"
+            else:
+                message = "【Azure Kinect 直播】\n直播本来就是停止状态。"
+
+            self.qq_controller.send_text(message)
+            self.bridge.log_signal.emit(f"直播停止完成，来源：{source}")
+        except Exception as e:
+            self.bridge.log_signal.emit(f"直播停止失败：{e}")
+            try:
+                self.qq_controller.send_text(f"【Azure Kinect 直播】\n直播停止失败：{e}")
+            except Exception:
+                pass
+
+
     def closeEvent(self, event):
         try:
             if hasattr(self, "camera_worker") and self.camera_worker:
@@ -527,6 +651,12 @@ class MainWindow(QWidget):
         try:
             if self.qq_controller:
                 self.qq_controller.stop_command_listener()
+        except Exception:
+            pass
+
+        try:
+            if self.live_manager:
+                self.live_manager.close()
         except Exception:
             pass
 

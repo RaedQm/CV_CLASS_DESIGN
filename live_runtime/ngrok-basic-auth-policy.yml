@@ -1,0 +1,6 @@
+on_http_request:
+  - actions:
+      - type: basic-auth
+        config:
+          credentials:
+            - viewer:c7ER3Qb9MKQ0L1gBj7

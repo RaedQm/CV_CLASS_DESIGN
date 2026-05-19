@@ -18,13 +18,17 @@ load_dotenv()
 START_COMMANDS = {"开始监听"}
 STOP_COMMANDS = {"停止监听"}
 SCREENSHOT_COMMANDS = {"截图"}
+LIVE_START_COMMANDS = {"直播"}
+LIVE_STOP_COMMANDS = {"结束直播"}
 
 COMMAND_TEMPLATE = (
     "指令错误。\n"
     "可用指令范本：\n"
     "1. 开始监听：开启 QQ 姿态监视\n"
     "2. 停止监听：关闭 QQ 姿态监视\n"
-    "3. 截图：截取当前摄像机画面和骨架，并发送图片"
+    "3. 截图：截取当前摄像机画面和骨架，并发送图片\n"
+    "4. 直播：开始 H.264 直播，并返回观看地址、用户名和临时密钥\n"
+    "5. 结束直播：停止当前直播"
 )
 
 
@@ -39,6 +43,8 @@ class QQController:
        - 开始监听 / 开始指令：调用 on_start
        - 停止监听 / 结束指令：调用 on_stop
        - 截图：调用 on_screenshot
+       - 直播：调用 on_live_start
+       - 结束直播：调用 on_live_stop
        - 其他指令：回复指令错误和指令范本
 
     .env 需要：
@@ -47,7 +53,7 @@ class QQController:
     QQ_USER_OPENID=你的user_openid
     """
 
-    def __init__(self, on_start=None, on_stop=None, on_screenshot=None, on_log=None):
+    def __init__(self, on_start=None, on_stop=None, on_screenshot=None, on_live_start=None, on_live_stop=None, on_log=None):
         self.app_id = os.getenv("QQ_APP_ID")
         self.app_secret = os.getenv("QQ_APP_SECRET")
         self.user_openid = os.getenv("QQ_USER_OPENID")
@@ -64,6 +70,8 @@ class QQController:
         self.on_start = on_start
         self.on_stop = on_stop
         self.on_screenshot = on_screenshot
+        self.on_live_start = on_live_start
+        self.on_live_stop = on_live_stop
         self.on_log = on_log
 
         self.access_token = None
@@ -331,6 +339,22 @@ class QQController:
                 self.on_screenshot()
             else:
                 await self.reply_text("截图功能未连接到窗口。")
+            return
+
+        if content in LIVE_START_COMMANDS:
+            self.log("收到 QQ 直播指令。")
+            if self.on_live_start:
+                self.on_live_start()
+            else:
+                await self.reply_text("直播功能未连接到窗口。")
+            return
+
+        if content in LIVE_STOP_COMMANDS:
+            self.log("收到 QQ 结束直播指令。")
+            if self.on_live_stop:
+                self.on_live_stop()
+            else:
+                await self.reply_text("直播功能未连接到窗口。")
             return
 
         # 其他任何非空内容，都回复指令错误和范本。
