@@ -4,10 +4,11 @@ from pathlib import Path
 
 import cv2
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
-from PyQt5.QtGui import QImage, QPixmap, QFont
+from PyQt5.QtGui import QImage, QPixmap, QFont, QTextCursor
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QPushButton, QTextEdit,
-    QHBoxLayout, QVBoxLayout, QMessageBox
+    QHBoxLayout, QVBoxLayout, QMessageBox, QFrame,
+    QGridLayout, QSizePolicy
 )
 
 from pose_detector import BodyPoseDetector
@@ -70,7 +71,7 @@ class MainWindow(QWidget):
         super().__init__()
 
         self.setWindowTitle("Azure Kinect 人体姿态检测与 QQ 监视系统")
-        self.resize(1200, 720)
+        self.resize(1280, 760)
 
         self.current_frame = None
         self.current_info = None
@@ -108,42 +109,311 @@ class MainWindow(QWidget):
         self.start_camera()
 
     def init_ui(self):
-        self.image_label = QLabel("正在启动 Azure Kinect...")
-        self.image_label.setAlignment(Qt.AlignCenter)
-        self.image_label.setMinimumSize(820, 620)
-        self.image_label.setStyleSheet("background-color: #111; color: white; border: 1px solid #444;")
+        """
+        初始化深紫色 UI。
+        左侧：标题 + 系统状态横排卡片 + 视频画面。
+        右侧：姿态信息、运行日志、控制按钮。
+        """
+        self.setMinimumSize(1024, 640)
+        self.setObjectName("MainWindow")
+        self.apply_theme()
 
+        # ===== 左侧视频区域 =====
+        self.video_title = QLabel("Azure Kinect 实时画面")
+        self.video_title.setObjectName("PanelTitle")
+
+        self.video_subtitle = QLabel("RGB 彩色图像 + 人体骨架叠加")
+        self.video_subtitle.setObjectName("PanelSubTitle")
+
+        video_header_text = QVBoxLayout()
+        video_header_text.setContentsMargins(0, 0, 0, 0)
+        video_header_text.setSpacing(2)
+        video_header_text.addWidget(self.video_title)
+        video_header_text.addWidget(self.video_subtitle)
+
+        video_header = QHBoxLayout()
+        video_header.setContentsMargins(0, 0, 0, 0)
+        video_header.setSpacing(12)
+        video_header.addLayout(video_header_text, stretch=1)
+
+        # 系统状态四个框移动到视频画面正上方，不再单独显示“系统状态”标题
+        self.time_value_label = QLabel("--")
+        self.body_count_label = QLabel("0")
+        self.qq_state_label = QLabel("关闭")
+        self.live_state_label = QLabel("关闭")
+
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(10)
+        status_row.addWidget(self.create_status_card("时间", self.time_value_label), stretch=1)
+        status_row.addWidget(self.create_status_card("人数", self.body_count_label), stretch=1)
+        status_row.addWidget(self.create_status_card("QQ监视", self.qq_state_label), stretch=1)
+        status_row.addWidget(self.create_status_card("直播", self.live_state_label), stretch=1)
+
+        self.image_label = QLabel("正在启动 Azure Kinect...")
+        self.image_label.setObjectName("VideoView")
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setMinimumSize(700, 430)
+        self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        video_card = QFrame()
+        video_card.setObjectName("VideoCard")
+        video_layout = QVBoxLayout(video_card)
+        video_layout.setContentsMargins(18, 16, 18, 18)
+        video_layout.setSpacing(12)
+        video_layout.addLayout(video_header)
+        video_layout.addLayout(status_row)
+        video_layout.addWidget(self.image_label, stretch=1)
+
+        # ===== 右侧信息与控制区域 =====
         self.info_text = QTextEdit()
+        self.info_text.setObjectName("InfoText")
         self.info_text.setReadOnly(True)
-        self.info_text.setFont(QFont("Consolas", 11))
-        self.info_text.setMinimumWidth(320)
+        self.info_text.setFont(QFont("Microsoft YaHei UI", 7))
+        self.info_text.setMinimumHeight(210)
+        self.info_text.setMaximumHeight(360)
+        self.info_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        self.log_text = QTextEdit()
+        self.log_text.setObjectName("LogText")
+        self.log_text.setReadOnly(True)
+        self.log_text.setFont(QFont("Consolas", 6))
+        self.log_text.setMinimumHeight(100)
+        self.log_text.setMaximumHeight(135)
+        self.log_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self.btn_screenshot = QPushButton("截图")
         self.btn_exit = QPushButton("退出")
         self.btn_start_qq = QPushButton("开始QQ监视")
         self.btn_stop_qq = QPushButton("关闭QQ监视")
 
+        self.btn_screenshot.setObjectName("PurpleButton1")
+        self.btn_exit.setObjectName("PurpleButton2")
+        self.btn_start_qq.setObjectName("PurpleButton3")
+        self.btn_stop_qq.setObjectName("PurpleButton4")
+
         for btn in [self.btn_screenshot, self.btn_exit, self.btn_start_qq, self.btn_stop_qq]:
-            btn.setMinimumHeight(46)
-            btn.setStyleSheet("font-size: 16px;")
+            btn.setMinimumHeight(34)
+            btn.setMaximumHeight(38)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self.btn_screenshot.clicked.connect(self.save_screenshot_by_button)
         self.btn_exit.clicked.connect(self.close)
         self.btn_start_qq.clicked.connect(lambda: self.enable_qq_monitor("按钮"))
         self.btn_stop_qq.clicked.connect(lambda: self.disable_qq_monitor("按钮"))
 
-        right_layout = QVBoxLayout()
-        right_layout.addWidget(self.info_text, stretch=1)
-        right_layout.addWidget(self.btn_screenshot)
-        right_layout.addWidget(self.btn_exit)
-        right_layout.addWidget(self.btn_start_qq)
-        right_layout.addWidget(self.btn_stop_qq)
+        buttons_layout = QVBoxLayout()
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_layout.setSpacing(8)
+        buttons_layout.addWidget(self.btn_screenshot)
+        buttons_layout.addWidget(self.btn_exit)
+        buttons_layout.addWidget(self.btn_start_qq)
+        buttons_layout.addWidget(self.btn_stop_qq)
+
+        right_card = QFrame()
+        right_card.setObjectName("SideCard")
+        right_layout = QVBoxLayout(right_card)
+        right_layout.setContentsMargins(16, 14, 16, 14)
+        right_layout.setSpacing(10)
+        right_layout.addWidget(self.make_section_title("姿态信息"))
+        right_layout.addWidget(self.info_text, stretch=0)
+        right_layout.addSpacing(8)
+        right_layout.addWidget(self.make_section_title("运行日志"))
+        right_layout.addWidget(self.log_text, stretch=0)
+        right_layout.addSpacing(8)
+        right_layout.addWidget(self.make_section_title("控制面板"))
+        right_layout.addLayout(buttons_layout)
+        right_layout.addStretch(1)
 
         main_layout = QHBoxLayout()
-        main_layout.addWidget(self.image_label, stretch=3)
-        main_layout.addLayout(right_layout, stretch=1)
+        main_layout.setContentsMargins(16, 16, 16, 16)
+        main_layout.setSpacing(16)
+        main_layout.addWidget(video_card, stretch=7)
+        main_layout.addWidget(right_card, stretch=3)
 
         self.setLayout(main_layout)
+        self.update_status_badges()
+
+    def make_section_title(self, text):
+        label = QLabel(text)
+        label.setObjectName("SectionTitle")
+        return label
+
+    def create_status_card(self, title, value_label):
+        card = QFrame()
+        card.setObjectName("StatusCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setSpacing(1)
+
+        title_label = QLabel(title)
+        title_label.setObjectName("StatusCardTitle")
+
+        value_label.setObjectName("StatusCardValue")
+        value_label.setAlignment(Qt.AlignCenter)
+
+        layout.addWidget(title_label)
+        layout.addWidget(value_label)
+        return card
+
+    def apply_theme(self):
+        self.setStyleSheet("""
+        QWidget#MainWindow {
+            background: #17112b;
+            color: #f3e8ff;
+            font-family: 'Microsoft YaHei UI', 'Segoe UI', Arial;
+        }
+        QFrame#VideoCard, QFrame#SideCard {
+            background: #1e1637;
+            border: 1px solid #3b2b63;
+            border-radius: 18px;
+        }
+        QLabel#VideoView {
+            background: #06030f;
+            color: #c4b5fd;
+            border: 1px solid #4c3a75;
+            border-radius: 14px;
+            font-size: 16px;
+        }
+        QLabel#PanelTitle {
+            color: #faf5ff;
+            font-size: 19px;
+            font-weight: 700;
+        }
+        QLabel#PanelSubTitle {
+            color: #c4b5fd;
+            font-size: 11px;
+        }
+        QLabel#SectionTitle {
+            color: #f3e8ff;
+            font-size: 12px;
+            font-weight: 700;
+            padding-top: 1px;
+        }
+        QFrame#StatusCard {
+            background: #2a1f49;
+            border: 1px solid #5b3f8f;
+            border-radius: 13px;
+        }
+        QLabel#StatusCardTitle {
+            color: #d8b4fe;
+            font-size: 10px;
+        }
+        QLabel#StatusCardValue {
+            color: #ffffff;
+            font-size: 13px;
+            font-weight: 700;
+        }
+        QTextEdit#InfoText, QTextEdit#LogText {
+            background: #35285f;
+            color: #f5f3ff;
+            border: 1px solid #6d4aa3;
+            border-radius: 14px;
+            padding: 6px;
+            selection-background-color: #7c3aed;
+            selection-color: #ffffff;
+        }
+        QTextEdit#InfoText:focus, QTextEdit#LogText:focus {
+            border: 1px solid #a78bfa;
+            background: #3c2d68;
+        }
+        QTextEdit#LogText {
+            color: #ddd6fe;
+        }
+        QTextEdit#InfoText QScrollBar:vertical,
+        QTextEdit#LogText QScrollBar:vertical {
+            background: #24193f;
+            width: 12px;
+            margin: 10px 3px 10px 3px;
+            border-radius: 6px;
+        }
+        QTextEdit#InfoText QScrollBar::handle:vertical,
+        QTextEdit#LogText QScrollBar::handle:vertical {
+            background: #7c3aed;
+            min-height: 28px;
+            border-radius: 6px;
+        }
+        QTextEdit#InfoText QScrollBar::handle:vertical:hover,
+        QTextEdit#LogText QScrollBar::handle:vertical:hover {
+            background: #a78bfa;
+        }
+        QTextEdit#InfoText QScrollBar::add-line:vertical,
+        QTextEdit#InfoText QScrollBar::sub-line:vertical,
+        QTextEdit#LogText QScrollBar::add-line:vertical,
+        QTextEdit#LogText QScrollBar::sub-line:vertical {
+            height: 0px;
+            background: transparent;
+        }
+        QTextEdit#InfoText QScrollBar::add-page:vertical,
+        QTextEdit#InfoText QScrollBar::sub-page:vertical,
+        QTextEdit#LogText QScrollBar::add-page:vertical,
+        QTextEdit#LogText QScrollBar::sub-page:vertical {
+            background: transparent;
+        }
+        QPushButton {
+            border: none;
+            border-radius: 13px;
+            padding: 6px 10px;
+            color: white;
+            font-size: 11px;
+            font-weight: 700;
+        }
+        QPushButton#PurpleButton1 {
+            background: #a78bfa;
+        }
+        QPushButton#PurpleButton1:hover {
+            background: #b99cff;
+        }
+        QPushButton#PurpleButton1:pressed {
+            background: #8b5cf6;
+        }
+        QPushButton#PurpleButton2 {
+            background: #8b5cf6;
+        }
+        QPushButton#PurpleButton2:hover {
+            background: #9f7aea;
+        }
+        QPushButton#PurpleButton2:pressed {
+            background: #7c3aed;
+        }
+        QPushButton#PurpleButton3 {
+            background: #7c3aed;
+        }
+        QPushButton#PurpleButton3:hover {
+            background: #8b5cf6;
+        }
+        QPushButton#PurpleButton3:pressed {
+            background: #6d28d9;
+        }
+        QPushButton#PurpleButton4 {
+            background: #5b21b6;
+        }
+        QPushButton#PurpleButton4:hover {
+            background: #6d28d9;
+        }
+        QPushButton#PurpleButton4:pressed {
+            background: #4c1d95;
+        }
+        QMessageBox {
+            background: #1e1637;
+            color: #f3e8ff;
+        }
+        """)
+
+    def update_status_badges(self):
+        qq_on = self.qq_monitor_enabled
+        live_on = self.live_stream_running
+
+        self.qq_state_label.setText('开启' if qq_on else '关闭')
+        self.live_state_label.setText('开启' if live_on else '关闭')
+
+        self.qq_state_label.setStyleSheet(
+            "color:#bbf7d0;" if qq_on else "color:#e9d5ff;"
+        )
+        self.live_state_label.setStyleSheet(
+            "color:#dbeafe;" if live_on else "color:#e9d5ff;"
+        )
 
     def init_qq(self):
         try:
@@ -235,38 +505,75 @@ class MainWindow(QWidget):
 
     def update_info_text(self, info):
         timestamp = info["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
-        lines = [
-            f"时间：{timestamp}",
-            f"人数：{info['num_bodies']}",
-            "",
-            "每个人的姿态："
-        ]
+        short_time = info["timestamp"].strftime("%H:%M:%S")
+
+        self.time_value_label.setText(short_time)
+        self.body_count_label.setText(str(info["num_bodies"]))
+        self.update_status_badges()
+
+        pose_html = []
 
         if info["num_bodies"] == 0:
-            lines.append("未检测到人体")
+            pose_html.append("""
+            <div style='padding:5px 0;color:#c4b5fd;font-size:11px;'>
+                未检测到人体
+            </div>
+            """)
         else:
             for item in info["poses"]:
-                lines.append(
-                    f"人物{item['person_index']}（ID:{item['body_id']}）：{item['pose']}"
-                )
+                pose = item["pose"]
+                if pose == "疑似跌倒":
+                    color = "#fecaca"
+                    bg = "#7f1d1d"
+                    border = "#ef4444"
+                elif "举" in pose or "平举" in pose:
+                    color = "#dbeafe"
+                    bg = "#1d4ed8"
+                    border = "#60a5fa"
+                elif pose in {"下蹲", "弯腰"}:
+                    color = "#fef3c7"
+                    bg = "#92400e"
+                    border = "#f59e0b"
+                else:
+                    color = "#dcfce7"
+                    bg = "#14532d"
+                    border = "#22c55e"
 
-        lines.append("")
-        lines.append(f"QQ监视状态：{'开启' if self.qq_monitor_enabled else '关闭'}")
-        lines.append(f"直播状态：{'开启' if self.live_stream_running else '关闭'}")
-        if self.live_stream_info:
-            lines.append(f"直播地址：{self.live_stream_info.get('watch_url', '')}")
-        lines.append(f"跌倒报警状态：{'已触发，等待恢复' if self.fall_alert_active else '待命'}")
-        lines.append("")
-        lines.append("QQ控制指令：")
-        lines.append("开始监听：开启 QQ 姿态监视")
-        lines.append("停止监听：关闭 QQ 姿态监视")
-        lines.append("截图：保存当前画面并发送到 QQ")
-        lines.append("直播：开启 H.264 直播并返回公网观看地址")
-        lines.append("结束直播：停止 H.264 直播")
-        lines.append("")
-        lines.append("说明：疑似跌倒会自动报警，但不会自动开启 QQ 监视。")
+                pose_html.append(f"""
+                <div style='margin:4px 0;padding:6px;border-radius:10px;
+                            background:#281e48;border:1px solid #6d4aa3;'>
+                    <div style='color:#ddd6fe;font-size:10px;font-weight:700;'>人物{item['person_index']}：</div>
+                    <div style='margin-top:3px;'>
+                        <span style='display:inline-block;padding:3px 8px;border-radius:999px;
+                                     background:{bg};color:{color};border:1px solid {border};
+                                     font-weight:700;font-size:11px;'>
+                            {pose}
+                        </span>
+                    </div>
+                </div>
+                """)
 
-        self.info_text.setPlainText("\n".join(lines))
+        html = f"""
+        <div style='font-family:Microsoft YaHei UI, Segoe UI, Arial;color:#f5f3ff;font-size:11px;'>
+            <div style='font-size:9px;color:#d8b4fe;'>当前时间</div>
+            <div style='font-size:12px;font-weight:700;color:#f8fafc;margin-bottom:4px;'>{timestamp}</div>
+
+            <div style='font-size:9px;color:#d8b4fe;margin-top:6px;'>检测结果</div>
+            <div style='margin-bottom:8px;'>
+                <b>人数：</b>{info['num_bodies']}
+            </div>
+
+            <div style='font-size:9px;color:#d8b4fe;margin-top:8px;'>每个人的姿态</div>
+            {''.join(pose_html)}
+
+            <div style='margin-top:6px;padding:6px;border-radius:10px;background:#281e48;border:1px solid #6d4aa3;color:#e9d5ff;font-size:10px;'>
+                <div><b>QQ 指令：</b>开始监听 / 停止监听 / 截图 / 直播 / 结束直播</div>
+                <div style='margin-top:3px;color:#c4b5fd;'>疑似跌倒会自动报警，但不会自动开启 QQ 监视。</div>
+            </div>
+        </div>
+        """
+
+        self.info_text.setHtml(html)
 
     def build_pose_message(self, info):
         timestamp = info["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
@@ -283,7 +590,7 @@ class MainWindow(QWidget):
         else:
             for item in info["poses"]:
                 lines.append(
-                    f"人物{item['person_index']}（ID:{item['body_id']}）：{item['pose']}"
+                    f"人物{item['person_index']}：{item['pose']}"
                 )
 
         return "\n".join(lines)
@@ -455,6 +762,7 @@ class MainWindow(QWidget):
         self.last_qq_send_time = 0
 
         self.append_log(f"QQ监视已开启，来源：{source}")
+        self.update_status_badges()
 
         if already_open:
             self.send_qq_feedback("QQ监视已经是开启状态。")
@@ -466,6 +774,7 @@ class MainWindow(QWidget):
 
         self.qq_monitor_enabled = False
         self.append_log(f"QQ监视已关闭，来源：{source}")
+        self.update_status_badges()
 
         if already_closed:
             self.send_qq_feedback("QQ监视本来就是关闭状态。")
@@ -474,6 +783,10 @@ class MainWindow(QWidget):
 
     def append_log(self, text):
         print(text)
+        if hasattr(self, "log_text") and self.log_text is not None:
+            now = time.strftime("%H:%M:%S")
+            self.log_text.append(f"[{now}] {text}")
+            self.log_text.moveCursor(QTextCursor.End)
 
     def save_screenshot_to_file(self):
         """
@@ -578,6 +891,7 @@ class MainWindow(QWidget):
             result = self.live_manager.start()
             self.live_stream_running = True
             self.live_stream_info = result
+            self.bridge.log_signal.emit("UI状态：直播已开启。")
 
             message = self.build_live_started_message(result)
             self.qq_controller.send_text(message)
@@ -624,6 +938,7 @@ class MainWindow(QWidget):
             was_running = self.live_manager.stop()
             self.live_stream_running = False
             self.live_stream_info = None
+            self.bridge.log_signal.emit("UI状态：直播已关闭。")
 
             if was_running:
                 message = "【Azure Kinect 直播】\n直播已停止。"

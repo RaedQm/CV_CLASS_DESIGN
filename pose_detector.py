@@ -102,7 +102,7 @@ def recognize_pose(skeleton):
     neck_pelvis_vertical = abs(neck[1] - pelvis[1])
     tilt_ratio = neck_pelvis_horizontal / max(neck_pelvis_vertical, 1.0)
 
-    # y 越小表示越高，所以手腕 y < 头部 y 表示举手
+    # 手腕 y < 头部 y 表示举手
     left_hand_up = left_wrist[1] < head[1] - 80
     right_hand_up = right_wrist[1] < head[1] - 80
 
