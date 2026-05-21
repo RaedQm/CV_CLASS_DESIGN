@@ -1,16 +1,23 @@
 import math
+from collections import Counter, deque
 from datetime import datetime
 
 import pykinect_azure as pykinect
 
 
+# =========================
+# Azure Kinect / BodyTrack 配置
+# =========================
+
 def make_tracker_config():
     """
     Body Tracking 配置。
-    默认使用 CPU 模式，最容易跑通。
+    默认使用 GPU 模式；如果你的电脑 GPU 模式报错，可以把 GPU 改成 CPU。
     """
     tracker_config = pykinect.default_tracker_configuration
     tracker_config.sensor_orientation = pykinect.K4ABT_SENSOR_ORIENTATION_DEFAULT
+
+    # 如果 GPU 模式不稳定，把下面这一行改为：
     # tracker_config.tracker_processing_mode = pykinect.K4ABT_TRACKER_PROCESSING_MODE_CPU
     tracker_config.tracker_processing_mode = pykinect.K4ABT_TRACKER_PROCESSING_MODE_GPU
     tracker_config.gpu_device_id = 0
@@ -48,6 +55,10 @@ JOINT = {
 }
 
 
+# =========================
+# 关节点读取与几何计算
+# =========================
+
 def get_xyz_from_joint(joint):
     """
     读取关节点 3D 坐标，单位：毫米。
@@ -72,63 +83,294 @@ def get_joint_position(skeleton, joint_name):
     return get_xyz_from_joint(joint)
 
 
+def is_invalid_point(point):
+    """
+    简单过滤无效点。
+    Body Tracking 偶尔会返回接近 (0,0,0) 的异常点。
+    """
+    return abs(point[0]) < 1e-3 and abs(point[1]) < 1e-3 and abs(point[2]) < 1e-3
+
+
+def distance_3d(p1, p2):
+    return math.sqrt(
+        (p1[0] - p2[0]) ** 2 +
+        (p1[1] - p2[1]) ** 2 +
+        (p1[2] - p2[2]) ** 2
+    )
+
+
+def vec_from_to(p1, p2):
+    return (
+        p2[0] - p1[0],
+        p2[1] - p1[1],
+        p2[2] - p1[2],
+    )
+
+
+def vector_norm(vector):
+    return math.sqrt(vector[0] ** 2 + vector[1] ** 2 + vector[2] ** 2)
+
+
+def angle_between_vectors(v1, v2):
+    """
+    计算两个三维向量夹角，单位：度。
+    """
+    n1 = vector_norm(v1)
+    n2 = vector_norm(v2)
+
+    if n1 < 1e-6 or n2 < 1e-6:
+        return 0.0
+
+    cos_value = (
+        v1[0] * v2[0] +
+        v1[1] * v2[1] +
+        v1[2] * v2[2]
+    ) / (n1 * n2)
+
+    cos_value = max(-1.0, min(1.0, cos_value))
+    return math.degrees(math.acos(cos_value))
+
+
+def angle_at_b(point_a, point_b, point_c):
+    """
+    计算 A-B-C 中 B 点处的夹角。
+    用于计算膝盖角度、肘部角度。
+    """
+    ba = vec_from_to(point_b, point_a)
+    bc = vec_from_to(point_b, point_c)
+    return angle_between_vectors(ba, bc)
+
+
+# =========================
+# 姿态识别逻辑
+# =========================
+
 def recognize_pose(skeleton):
     """
-    简单姿态识别。
+    强化版人体姿态识别。
+
+    1. 使用躯干长度、肩宽等人体比例做动态阈值，减少远近距离影响。
+    2. 使用膝盖角度判断下蹲/坐姿，减少站立误判。
+    3. 使用躯干与竖直方向夹角判断弯腰和跌倒。
+    4. 跌倒采用多条件评分，而不是单独用人体高度判断。
+    5. 支持“举手 + 下蹲/弯腰”的组合姿态。
+
     坐标说明：
     x：左右方向
     y：上下方向，向下为正
     z：前后方向，远离相机为正
     """
-    head = get_joint_position(skeleton, "HEAD")
-    neck = get_joint_position(skeleton, "NECK")
-    pelvis = get_joint_position(skeleton, "PELVIS")
+    try:
+        head = get_joint_position(skeleton, "HEAD")
+        neck = get_joint_position(skeleton, "NECK")
+        pelvis = get_joint_position(skeleton, "PELVIS")
 
-    left_wrist = get_joint_position(skeleton, "WRIST_LEFT")
-    right_wrist = get_joint_position(skeleton, "WRIST_RIGHT")
+        left_shoulder = get_joint_position(skeleton, "SHOULDER_LEFT")
+        right_shoulder = get_joint_position(skeleton, "SHOULDER_RIGHT")
 
-    left_ankle = get_joint_position(skeleton, "ANKLE_LEFT")
-    right_ankle = get_joint_position(skeleton, "ANKLE_RIGHT")
+        left_elbow = get_joint_position(skeleton, "ELBOW_LEFT")
+        right_elbow = get_joint_position(skeleton, "ELBOW_RIGHT")
 
-    ankle_y = (left_ankle[1] + right_ankle[1]) / 2.0
-    body_height_y = ankle_y - head[1]
-    pelvis_to_ankle_y = ankle_y - pelvis[1]
-    head_to_pelvis_y = pelvis[1] - head[1]
+        left_wrist = get_joint_position(skeleton, "WRIST_LEFT")
+        right_wrist = get_joint_position(skeleton, "WRIST_RIGHT")
 
-    neck_pelvis_horizontal = math.sqrt(
-        (neck[0] - pelvis[0]) ** 2 +
-        (neck[2] - pelvis[2]) ** 2
+        left_hip = get_joint_position(skeleton, "HIP_LEFT")
+        right_hip = get_joint_position(skeleton, "HIP_RIGHT")
+
+        left_knee = get_joint_position(skeleton, "KNEE_LEFT")
+        right_knee = get_joint_position(skeleton, "KNEE_RIGHT")
+
+        left_ankle = get_joint_position(skeleton, "ANKLE_LEFT")
+        right_ankle = get_joint_position(skeleton, "ANKLE_RIGHT")
+
+    except Exception:
+        return "无法判断"
+
+    core_points = [
+        head, neck, pelvis,
+        left_shoulder, right_shoulder,
+        left_hip, right_hip,
+        left_knee, right_knee,
+        left_ankle, right_ankle,
+    ]
+
+    valid_core_points = [point for point in core_points if not is_invalid_point(point)]
+    if len(valid_core_points) < 7:
+        return "无法判断"
+
+    # -------- 人体尺度：用于动态阈值 --------
+    shoulder_width = max(distance_3d(left_shoulder, right_shoulder), 250.0)
+    torso_length = max(distance_3d(neck, pelvis), 350.0)
+
+    all_points = [
+        head, neck, pelvis,
+        left_shoulder, right_shoulder,
+        left_elbow, right_elbow,
+        left_wrist, right_wrist,
+        left_hip, right_hip,
+        left_knee, right_knee,
+        left_ankle, right_ankle,
+    ]
+    all_points = [point for point in all_points if not is_invalid_point(point)]
+
+    ys = [point[1] for point in all_points]
+    xs = [point[0] for point in all_points]
+    zs = [point[2] for point in all_points]
+
+    body_height_y = max(ys) - min(ys)
+    body_width_x = max(xs) - min(xs)
+    body_depth_z = max(zs) - min(zs)
+    body_horizontal_extent = max(body_width_x, body_depth_z)
+
+    avg_ankle_y = (left_ankle[1] + right_ankle[1]) / 2.0
+    pelvis_to_ankle_y = avg_ankle_y - pelvis[1]
+
+    # pelvis -> neck 接近竖直向上时，躯干角度小。
+    # y 轴向下，所以竖直向上是 (0, -1, 0)。
+    torso_vector = vec_from_to(pelvis, neck)
+    vertical_up = (0.0, -1.0, 0.0)
+    torso_angle = angle_between_vectors(torso_vector, vertical_up)
+
+    left_knee_angle = angle_at_b(left_hip, left_knee, left_ankle)
+    right_knee_angle = angle_at_b(right_hip, right_knee, right_ankle)
+    avg_knee_angle = (left_knee_angle + right_knee_angle) / 2.0
+
+    left_elbow_angle = angle_at_b(left_shoulder, left_elbow, left_wrist)
+    right_elbow_angle = angle_at_b(right_shoulder, right_elbow, right_wrist)
+
+    # -------- 手部动作：举手 / 平举 --------
+    hand_up_margin = max(80.0, torso_length * 0.18)
+    elbow_raise_margin = max(80.0, torso_length * 0.20)
+
+    left_hand_up = (
+        left_wrist[1] < head[1] - hand_up_margin and
+        left_elbow[1] < left_shoulder[1] + elbow_raise_margin
     )
-    neck_pelvis_vertical = abs(neck[1] - pelvis[1])
-    tilt_ratio = neck_pelvis_horizontal / max(neck_pelvis_vertical, 1.0)
 
-    # 手腕 y < 头部 y 表示举手
-    left_hand_up = left_wrist[1] < head[1] - 80
-    right_hand_up = right_wrist[1] < head[1] - 80
+    right_hand_up = (
+        right_wrist[1] < head[1] - hand_up_margin and
+        right_elbow[1] < right_shoulder[1] + elbow_raise_margin
+    )
 
-    squat = pelvis_to_ankle_y < head_to_pelvis_y * 0.70
-    bend_over = tilt_ratio > 0.55
-    fall = body_height_y < 650
+    side_margin_y = max(100.0, torso_length * 0.25)
 
-    if fall:
+    left_arm_side = (
+        abs(left_wrist[1] - left_shoulder[1]) < side_margin_y and
+        abs(left_wrist[0] - left_shoulder[0]) > shoulder_width * 0.55 and
+        left_elbow_angle > 120
+    )
+
+    right_arm_side = (
+        abs(right_wrist[1] - right_shoulder[1]) < side_margin_y and
+        abs(right_wrist[0] - right_shoulder[0]) > shoulder_width * 0.55 and
+        right_elbow_angle > 120
+    )
+
+    hand_pose = None
+    if left_hand_up and right_hand_up:
+        hand_pose = "双手举起"
+    elif left_hand_up:
+        hand_pose = "举左手"
+    elif right_hand_up:
+        hand_pose = "举右手"
+    elif left_arm_side and right_arm_side:
+        hand_pose = "双手平举"
+    elif left_arm_side:
+        hand_pose = "左手平举"
+    elif right_arm_side:
+        hand_pose = "右手平举"
+
+    # -------- 跌倒：多条件评分，减少弯腰/坐姿误判 --------
+    fall_score = 0
+
+    # 躯干接近水平
+    if torso_angle > 65:
+        fall_score += 1
+
+    # 竖直高度明显降低
+    if body_height_y < max(700.0, torso_length * 1.45):
+        fall_score += 1
+
+    # 水平方向展开明显大于竖直高度
+    if body_horizontal_extent > body_height_y * 0.9:
+        fall_score += 1
+
+    # 头部和骨盆高度接近，常见于躺倒
+    if abs(head[1] - pelvis[1]) < max(280.0, torso_length * 0.55):
+        fall_score += 1
+
+    if fall_score >= 3:
         return "疑似跌倒"
 
-    if left_hand_up and right_hand_up:
-        return "双手举起"
+    # -------- 下蹲 / 坐姿 --------
+    pelvis_ankle_ratio = pelvis_to_ankle_y / max(body_height_y, 1.0)
 
-    if left_hand_up:
-        return "举左手"
+    deep_squat_or_sit = (
+        pelvis_ankle_ratio < 0.40 and
+        avg_knee_angle < 125 and
+        torso_angle < 35
+    )
 
-    if right_hand_up:
-        return "举右手"
+    squat = (
+        pelvis_ankle_ratio < 0.48 and
+        avg_knee_angle < 150 and
+        torso_angle < 40
+    )
+
+    if deep_squat_or_sit:
+        return f"下蹲/坐姿+{hand_pose}" if hand_pose else "下蹲/坐姿"
 
     if squat:
-        return "下蹲"
+        return f"下蹲+{hand_pose}" if hand_pose else "下蹲"
+
+    # -------- 弯腰 --------
+    bend_over = (
+        35 <= torso_angle < 70 and
+        head[1] < pelvis[1]
+    )
 
     if bend_over:
-        return "弯腰"
+        return f"弯腰+{hand_pose}" if hand_pose else "弯腰"
 
-    return "站立"
+    # -------- 站立 / 手部动作 --------
+    if hand_pose:
+        return hand_pose
+
+    if torso_angle < 25 and avg_knee_angle > 145:
+        return "站立"
+
+    return "其他姿态"
+
+
+class PoseSmoother:
+    """
+    多帧投票平滑。
+    作用：减少单帧骨骼点抖动导致的姿态频繁跳变。
+    """
+
+    def __init__(self, window_size=5, min_count=3):
+        self.window_size = window_size
+        self.min_count = min_count
+        self.history = {}
+
+    def update(self, body_key, raw_pose):
+        if body_key not in self.history:
+            self.history[body_key] = deque(maxlen=self.window_size)
+
+        self.history[body_key].append(raw_pose)
+        counter = Counter(self.history[body_key])
+        most_common_pose, count = counter.most_common(1)[0]
+
+        if count >= self.min_count:
+            return most_common_pose
+
+        return raw_pose
+
+    def clear_missing_bodies(self, current_body_keys):
+        current_body_keys = set(current_body_keys)
+        for body_key in list(self.history.keys()):
+            if body_key not in current_body_keys:
+                del self.history[body_key]
 
 
 def make_pose_state(pose_items):
@@ -138,6 +380,10 @@ def make_pose_state(pose_items):
     """
     return tuple((item["person_index"], item["body_id"], item["pose"]) for item in pose_items)
 
+
+# =========================
+# 检测器类
+# =========================
 
 class BodyPoseDetector:
     """
@@ -163,6 +409,9 @@ class BodyPoseDetector:
         if hasattr(self.body_tracker, "set_temporal_smoothing"):
             self.body_tracker.set_temporal_smoothing(0.3)
 
+        # 姿态平滑窗口：5 帧中至少 3 帧一致才稳定输出。
+        self.pose_smoother = PoseSmoother(window_size=5, min_count=3)
+
     def read_frame(self):
         capture = self.device.update()
 
@@ -178,26 +427,42 @@ class BodyPoseDetector:
         display_image = color_image.copy()
         num_bodies = body_frame.get_num_bodies()
         pose_items = []
+        current_body_keys = []
 
         if num_bodies > 0:
             for body_index in range(num_bodies):
                 skeleton = body_frame.get_body_skeleton(body_index)
-                pose_text = recognize_pose(skeleton)
+                raw_pose_text = recognize_pose(skeleton)
 
                 try:
                     body_id = body_frame.get_body_id(body_index)
                 except Exception:
                     body_id = body_index
 
+                # 用 body_id 做平滑键；如果 body_id 不可哈希，退回字符串。
+                try:
+                    hash(body_id)
+                    body_key = body_id
+                except Exception:
+                    body_key = str(body_id)
+
+                pose_text = self.pose_smoother.update(body_key, raw_pose_text)
+                current_body_keys.append(body_key)
+
                 pose_items.append({
                     "person_index": body_index + 1,
                     "body_id": body_id,
                     "pose": pose_text,
+                    "raw_pose": raw_pose_text,
                 })
 
-            # 画骨架到 RGB 彩色相机坐标系，避免深度图坐标和 RGB 图错位
+            self.pose_smoother.clear_missing_bodies(current_body_keys)
+
+            # 画骨架到 RGB 彩色相机坐标系，避免深度图坐标和 RGB 图错位。
             color_camera_type = getattr(pykinect, "K4A_CALIBRATION_TYPE_COLOR", 1)
             display_image = body_frame.draw_bodies(display_image, color_camera_type)
+        else:
+            self.pose_smoother.clear_missing_bodies([])
 
         timestamp = datetime.now()
 
