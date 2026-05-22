@@ -8,6 +8,7 @@ from pathlib import Path
 
 import requests
 import websockets
+import base64
 from dotenv import load_dotenv
 
 

@@ -862,7 +862,10 @@ class MainWindow(QWidget):
             f"观看地址：{result.get('watch_url')}\n"
             f"用户名：{result.get('username')}\n"
             f"临时密钥：{result.get('password')}\n\n"
-            "说明：浏览器打开观看地址后，会弹出登录框；输入上面的用户名和临时密钥即可观看。"
+            "说明：\n"
+            "1. 可以点击观看地址，也可以扫描二维码打开直播页面。\n"
+            "2. 二维码只包含观看地址，不包含用户名和临时密钥。\n"
+            "3. 浏览器弹出登录框后，请输入上面的用户名和临时密钥。"
         )
 
     def start_live_stream(self, source="QQ指令"):
@@ -887,6 +890,32 @@ class MainWindow(QWidget):
             self.live_stream_running = True
             self.live_stream_info = result
             self.bridge.log_signal.emit("UI状态：直播已开启。")
+
+            watch_url = result.get("watch_url")
+
+            # 只有本次新启动直播时才重新生成二维码；
+            # 如果直播已经在运行，则直接复用已有直播地址，不重复生成文件也可以。
+            qr_path = None
+            if watch_url:
+                try:
+                    qr_path = self.live_manager.generate_live_qrcode(watch_url)
+                    self.bridge.log_signal.emit(f"直播二维码已生成：{qr_path}")
+                except Exception as e:
+                    self.bridge.log_signal.emit(f"直播二维码生成失败：{e}")
+
+            # 先发送二维码图片，再发送文字说明
+            if qr_path:
+                try:
+                    status_code, send_result = self.qq_controller.send_image(qr_path)
+                    self.bridge.log_signal.emit(
+                        f"直播二维码发送完成，HTTP状态码：{status_code}，返回：{send_result}"
+                    )
+                except Exception as e:
+                    self.bridge.log_signal.emit(f"直播二维码发送失败：{e}")
+                    try:
+                        self.qq_controller.send_text(f"直播已启动，但二维码发送失败：{e}")
+                    except Exception:
+                        pass    
 
             message = self.build_live_started_message(result)
             self.qq_controller.send_text(message)
@@ -936,7 +965,7 @@ class MainWindow(QWidget):
             self.bridge.log_signal.emit("UI状态：直播已关闭。")
 
             if was_running:
-                message = "【Azure Kinect 直播】\n直播已停止。"
+                message = "【Azure Kinect 直播】\n直播已停止，二维码图片已删除。"
             else:
                 message = "【Azure Kinect 直播】\n直播本来就是停止状态。"
 
@@ -948,7 +977,6 @@ class MainWindow(QWidget):
                 self.qq_controller.send_text(f"【Azure Kinect 直播】\n直播停止失败：{e}")
             except Exception:
                 pass
-
 
     def closeEvent(self, event):
         try:

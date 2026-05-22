@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import qrcode
 import socket
 import secrets
 import string
@@ -96,6 +97,7 @@ class LiveStreamManager:
         self.auth_username = None
         self.auth_password = None
         self.policy_path = None
+        self.live_qrcode_path = None
 
         self.running = False
         self.lock = threading.RLock()
@@ -357,6 +359,53 @@ class LiveStreamManager:
                 self.stop()
                 raise
 
+    def generate_live_qrcode(self, live_url):
+        """
+        生成直播观看地址二维码。
+        二维码只包含观看地址，不包含用户名和临时密钥。
+        """
+        qr_dir = self.work_dir / "live_qrcode"
+        qr_dir.mkdir(exist_ok=True)
+
+        filename = time.strftime("live_qrcode_%Y%m%d_%H%M%S.png")
+        qr_path = qr_dir / filename
+
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=10,
+            border=3
+        )
+
+        qr.add_data(live_url)
+        qr.make(fit=True)
+
+        img = qr.make_image(
+            fill_color="black",
+            back_color="white"
+        )
+
+        img.save(str(qr_path))
+
+        self.live_qrcode_path = qr_path
+        return qr_path
+
+
+    def delete_live_qrcode(self):
+        """
+        删除本次直播生成的二维码图片。
+        """
+        qr_path = getattr(self, "live_qrcode_path", None)
+
+        if qr_path and Path(qr_path).exists():
+            try:
+                Path(qr_path).unlink()
+                self.log(f"直播二维码已删除：{qr_path}")
+            except Exception as e:
+                self.log(f"删除直播二维码失败：{e}")
+
+        self.live_qrcode_path = None
+
     def write_frame(self, frame):
         if self.running and self.streamer:
             self.streamer.write_frame(frame)
@@ -416,6 +465,8 @@ class LiveStreamManager:
                 self.mediamtx_process = None
                 self.mediamtx_started_by_me = False
                 self.log("自动启动的 MediaMTX 已停止。")
+
+            self.delete_live_qrcode()
 
             self.log("直播已停止。")
             return bool(was_running)
