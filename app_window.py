@@ -70,7 +70,7 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Azure Kinect 人体姿态检测与 QQ 监视系统")
+        self.setWindowTitle("Azure Kinect人体姿态检测系统本地端")
         self.resize(1280, 760)
 
         self.current_frame = None
@@ -109,11 +109,6 @@ class MainWindow(QWidget):
         self.start_camera()
 
     def init_ui(self):
-        """
-        初始化深紫色 UI。
-        左侧：标题 + 系统状态横排卡片 + 视频画面。
-        右侧：姿态信息、运行日志、控制按钮。
-        """
         self.setMinimumSize(1024, 640)
         self.setObjectName("MainWindow")
         self.apply_theme()

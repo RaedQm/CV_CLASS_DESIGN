@@ -9,9 +9,7 @@ def main():
     app = QApplication(sys.argv)
     window = MainWindow()
     window.showMaximized()
-
-    # 启动后默认最大化，并在最大化尺寸下锁定窗口大小，禁止用户手动拖拽缩放。
-    # 延迟执行是为了等待系统完成最大化布局计算。
+    
     def lock_window_size():
         window.setFixedSize(window.size())
 
