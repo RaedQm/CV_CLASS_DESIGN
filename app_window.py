@@ -3,12 +3,12 @@ import threading
 from pathlib import Path
 
 import cv2
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QFont, QTextCursor
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QPushButton, QTextEdit,
     QHBoxLayout, QVBoxLayout, QMessageBox, QFrame,
-    QGridLayout, QSizePolicy, QInputDialog
+    QGridLayout, QSizePolicy, QInputDialog, QDialog
 )
 
 from pose_detector import BodyPoseDetector
@@ -66,6 +66,245 @@ class CommandBridge(QObject):
     live_start_signal = pyqtSignal()
     live_stop_signal = pyqtSignal()
     log_signal = pyqtSignal(str)
+
+
+class FaceEnrollDialog(QDialog):
+    """
+    主界面内嵌式人脸录入窗口。
+
+    只复用 MainWindow 已经采集到的 Azure Kinect 当前帧，不会再单独打开一套摄像头，
+    避免和 Body Tracking 采集线程抢占设备。
+    """
+
+    def __init__(self, parent_window, user_id, name, min_samples=5):
+        super().__init__(parent_window)
+        self.parent_window = parent_window
+        self.user_id = str(user_id)
+        self.name = str(name)
+        self.min_samples = int(min_samples)
+        self.saved_record_ids = []
+        self.completed = False
+
+        self.setWindowTitle("添加人脸信息")
+        self.resize(900, 650)
+        self.setModal(True)
+
+        self.title_label = QLabel(
+            f"正在录入：编号 {self.user_id}，姓名 {self.name}\n"
+            f"请至少拍摄 {self.min_samples} 张清晰人脸。建议正脸、轻微左转、轻微右转、不同距离各拍几张。"
+        )
+        self.title_label.setObjectName("PanelSubTitle")
+        self.title_label.setWordWrap(True)
+
+        self.preview_label = QLabel("等待摄像头画面...")
+        self.preview_label.setObjectName("VideoView")
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_label.setMinimumSize(760, 460)
+
+        self.status_label = QLabel()
+        self.status_label.setObjectName("PanelSubTitle")
+        self.status_label.setWordWrap(True)
+
+        self.btn_capture = QPushButton("拍摄")
+        self.btn_done = QPushButton("完成")
+        self.btn_capture.setObjectName("PurpleButton3")
+        self.btn_done.setObjectName("PurpleButton1")
+
+        for btn in [self.btn_capture, self.btn_done]:
+            btn.setMinimumHeight(38)
+            btn.setCursor(Qt.PointingHandCursor)
+
+        self.btn_capture.clicked.connect(self.capture_face)
+        self.btn_done.clicked.connect(self.finish_enroll)
+
+        button_row = QHBoxLayout()
+        button_row.addWidget(self.btn_capture)
+        button_row.addWidget(self.btn_done)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.preview_label, stretch=1)
+        layout.addWidget(self.status_label)
+        layout.addLayout(button_row)
+
+        # 复用主窗口主题。
+        try:
+            self.setStyleSheet(parent_window.styleSheet())
+        except Exception:
+            pass
+
+        self.update_status()
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_preview)
+        self.timer.start(80)
+
+    def _get_current_frame(self):
+        if self.parent_window.current_face_frame is not None:
+            return self.parent_window.current_face_frame.copy()
+        if self.parent_window.current_frame is not None:
+            return self.parent_window.current_frame.copy()
+        return None
+
+    def _frame_to_pixmap(self, frame):
+        if frame is None:
+            return None
+
+        image = frame
+        if image.ndim == 2:
+            qimage = QImage(
+                image.data,
+                image.shape[1],
+                image.shape[0],
+                image.strides[0],
+                QImage.Format_Grayscale8,
+            ).copy()
+        elif image.shape[2] == 4:
+            rgba = cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA)
+            qimage = QImage(
+                rgba.data,
+                rgba.shape[1],
+                rgba.shape[0],
+                rgba.strides[0],
+                QImage.Format_RGBA8888,
+            ).copy()
+        else:
+            rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            qimage = QImage(
+                rgb.data,
+                rgb.shape[1],
+                rgb.shape[0],
+                rgb.strides[0],
+                QImage.Format_RGB888,
+            ).copy()
+
+        return QPixmap.fromImage(qimage).scaled(
+            self.preview_label.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+
+    def update_preview(self):
+        frame = self._get_current_frame()
+        if frame is None:
+            self.preview_label.setText("等待摄像头画面...")
+            return
+
+        pixmap = self._frame_to_pixmap(frame)
+        if pixmap is not None:
+            self.preview_label.setPixmap(pixmap)
+
+    def update_status(self, message=None):
+        saved = len(self.saved_record_ids)
+        remaining = max(0, self.min_samples - saved)
+        base = f"已拍摄并录入 {saved} 张，至少还需 {remaining} 张。"
+        if saved >= self.min_samples:
+            base = f"已拍摄并录入 {saved} 张，可以点击“完成”。也可以继续拍摄更多样本。"
+        if message:
+            base += f"\n{message}"
+        self.status_label.setText(base)
+
+    def capture_face(self):
+        frame = self._get_current_frame()
+        if frame is None:
+            QMessageBox.warning(self, "无法拍摄", "当前还没有可用的摄像头画面。")
+            return
+
+        face_engine = self.parent_window.face_engine
+        if face_engine is None:
+            QMessageBox.warning(self, "无法拍摄", "人脸识别模块不可用，无法提取人脸特征。")
+            return
+
+        try:
+            faces = face_engine.detect_faces(frame)
+        except Exception as e:
+            self.parent_window.append_log(f"添加人脸时检测失败：{e}")
+            QMessageBox.warning(self, "检测失败", f"人脸检测失败：\n{e}")
+            return
+
+        if len(faces) == 0:
+            QMessageBox.warning(self, "未检测到人脸", "当前画面中没有检测到人脸，请面向摄像头后重试。")
+            return
+
+        if len(faces) > 1:
+            QMessageBox.warning(
+                self,
+                "人脸数量过多",
+                f"当前画面中检测到 {len(faces)} 张人脸。\n录入时请保证画面中只有一个人。",
+            )
+            return
+
+        try:
+            feature = face_engine.get_feature(frame, faces[0])
+            db = self.parent_window.get_face_database()
+            record_id = db.add_face(self.user_id, self.name, feature)
+            self.saved_record_ids.append(record_id)
+            known_count = self.parent_window.refresh_face_database_cache()
+            self.parent_window.append_log(
+                f"已拍摄人脸样本：记录ID={record_id}，编号={self.user_id}，姓名={self.name}；"
+                f"人脸库已自动刷新，当前 {known_count} 条人脸特征。"
+            )
+            self.update_status(f"本次拍摄成功：记录ID={record_id}。")
+        except Exception as e:
+            self.parent_window.append_log(f"添加人脸记录失败：{e}")
+            QMessageBox.warning(self, "添加失败", f"添加人脸记录失败：\n{e}")
+
+    def finish_enroll(self):
+        saved = len(self.saved_record_ids)
+        if saved < self.min_samples:
+            QMessageBox.warning(
+                self,
+                "样本不足",
+                f"当前只录入了 {saved} 张，至少需要 {self.min_samples} 张。\n请继续点击“拍摄”。",
+            )
+            return
+
+        self.completed = True
+        self.parent_window.refresh_face_database_cache()
+        QMessageBox.information(
+            self,
+            "录入完成",
+            f"编号：{self.user_id}\n姓名：{self.name}\n本次共录入：{saved} 张人脸样本。",
+        )
+        self.accept()
+
+    def reject(self):
+        if self.completed:
+            return super().reject()
+
+        saved = len(self.saved_record_ids)
+        if saved == 0:
+            return super().reject()
+
+        reply = QMessageBox.question(
+            self,
+            "放弃录入？",
+            f"当前已拍摄 {saved} 张，但尚未点击“完成”。\n是否放弃本次录入并删除这些已保存样本？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            try:
+                db = self.parent_window.get_face_database()
+                deleted = db.delete_by_ids(self.saved_record_ids)
+                known_count = self.parent_window.refresh_face_database_cache()
+                self.parent_window.append_log(
+                    f"已放弃本次人脸录入，删除 {deleted} 条临时样本；"
+                    f"人脸库已自动刷新，当前 {known_count} 条人脸特征。"
+                )
+            except Exception as e:
+                self.parent_window.append_log(f"放弃录入时删除临时样本失败：{e}")
+            return super().reject()
+
+    def closeEvent(self, event):
+        before = self.result()
+        self.reject()
+        if self.result() != before or len(self.saved_record_ids) == 0 or self.completed:
+            event.accept()
+        else:
+            event.ignore()
 
 
 class MainWindow(QWidget):
@@ -505,7 +744,7 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "刷新失败", f"刷新人脸库失败：\n{e}")
 
     def add_face_record_dialog(self):
-        """使用当前摄像头画面添加一条人脸特征记录，并自动刷新人脸库缓存。"""
+        """打开多样本人脸录入窗口，自动分配从 1 开始的最小空闲编号。"""
         if self.face_engine is None:
             reply = QMessageBox.question(
                 self,
@@ -521,23 +760,22 @@ class MainWindow(QWidget):
                 QMessageBox.warning(self, "无法添加", "人脸识别模块仍不可用，无法从画面中提取人脸特征。")
                 return
 
-        user_id, ok = QInputDialog.getText(
-            self,
-            "添加人脸信息",
-            "请输入用户ID，例如 001："
-        )
-        if not ok:
+        if self.current_face_frame is None and self.current_frame is None:
+            QMessageBox.warning(self, "无法添加", "当前还没有可用的摄像头画面。")
             return
 
-        user_id = user_id.strip()
-        if not user_id:
-            QMessageBox.warning(self, "输入无效", "用户ID不能为空。")
+        try:
+            db = self.get_face_database()
+            user_id = str(db.get_next_available_user_id())
+        except Exception as e:
+            self.append_log(f"自动分配人脸编号失败：{e}")
+            QMessageBox.warning(self, "无法添加", f"自动分配人脸编号失败：\n{e}")
             return
 
         name, ok = QInputDialog.getText(
             self,
             "添加人脸信息",
-            "请输入姓名："
+            f"系统将自动分配编号：{user_id}\n请输入姓名："
         )
         if not ok:
             return
@@ -547,49 +785,20 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "输入无效", "姓名不能为空。")
             return
 
-        if self.current_face_frame is not None:
-            frame = self.current_face_frame.copy()
-        elif self.current_frame is not None:
-            frame = self.current_frame.copy()
-        else:
-            QMessageBox.warning(self, "无法添加", "当前还没有可用的摄像头画面。")
-            return
+        dialog = FaceEnrollDialog(
+            parent_window=self,
+            user_id=user_id,
+            name=name,
+            min_samples=5,
+        )
+        result = dialog.exec_()
 
-        try:
-            faces = self.face_engine.detect_faces(frame)
-        except Exception as e:
-            self.append_log(f"添加人脸时检测失败：{e}")
-            QMessageBox.warning(self, "检测失败", f"人脸检测失败：\n{e}")
-            return
-
-        if len(faces) == 0:
-            QMessageBox.warning(self, "未检测到人脸", "当前画面中没有检测到人脸，请面向摄像头后重试。")
-            return
-
-        if len(faces) > 1:
-            QMessageBox.warning(self, "人脸数量过多", f"当前画面中检测到 {len(faces)} 张人脸。\n添加人脸信息时请保证画面中只有一个人。")
-            return
-
-        try:
-            feature = self.face_engine.get_feature(frame, faces[0])
-            db = self.get_face_database()
-            record_id = db.add_face(user_id, name, feature)
-
+        if result == QDialog.Accepted:
             known_count = self.refresh_face_database_cache()
-
             self.append_log(
-                f"已添加人脸记录：ID={record_id}，用户ID={user_id}，姓名={name}；"
-                f"人脸库已自动刷新，当前 {known_count} 条人脸特征。"
+                f"人脸信息录入完成：编号={user_id}，姓名={name}，"
+                f"本次录入 {len(dialog.saved_record_ids)} 张；当前 {known_count} 条人脸特征。"
             )
-
-            QMessageBox.information(
-                self,
-                "添加完成",
-                f"已添加人脸记录。\n记录ID：{record_id}\n用户ID：{user_id}\n姓名：{name}\n\n人脸库已自动刷新，当前共有 {known_count} 条人脸特征。"
-            )
-        except Exception as e:
-            self.append_log(f"添加人脸记录失败：{e}")
-            QMessageBox.warning(self, "添加失败", f"添加人脸记录失败：\n{e}")
 
     def build_face_database_text(self, max_records=80):
         db = self.get_face_database()

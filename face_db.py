@@ -170,6 +170,38 @@ class FaceDatabase:
         finally:
             conn.close()
 
+    def get_next_available_user_id(self):
+        """
+        返回从 1 开始的最小空闲数字编号。
+
+        数据库里的 user_id 是文本字段；这里把能解析成正整数的 user_id 视为已占用。
+        例如已有 1、2、4，则返回 3。已有 001 也会视为编号 1 已占用。
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT DISTINCT user_id FROM faces")
+            rows = cursor.fetchall()
+        finally:
+            conn.close()
+
+        used_ids = set()
+        for (user_id,) in rows:
+            text = str(user_id).strip()
+            if not text:
+                continue
+            try:
+                value = int(text)
+            except Exception:
+                continue
+            if value > 0:
+                used_ids.add(value)
+
+        next_id = 1
+        while next_id in used_ids:
+            next_id += 1
+        return next_id
+
     def delete_by_ids(self, ids):
         """按记录 ID 删除。返回实际删除数量。"""
         clean_ids = []
