@@ -8,13 +8,14 @@ from PyQt5.QtGui import QImage, QPixmap, QFont, QTextCursor
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QPushButton, QTextEdit,
     QHBoxLayout, QVBoxLayout, QMessageBox, QFrame,
-    QGridLayout, QSizePolicy
+    QGridLayout, QSizePolicy, QInputDialog
 )
 
 from pose_detector import BodyPoseDetector
 from qq_sender import QQController
 from live_stream_manager import LiveStreamManager
 from face_engine import FaceEngine
+from face_db import FaceDatabase
 
 
 QQ_SEND_MIN_INTERVAL_SECONDS = 3.0
@@ -95,6 +96,7 @@ class MainWindow(QWidget):
 
         # 人脸识别器：只在截图时调用，避免影响平时实时检测延迟。
         self.face_engine = None
+        self.face_db = None
         self.last_screenshot_face_results = []
         self.last_screenshot_face_error = None
 
@@ -192,13 +194,23 @@ class MainWindow(QWidget):
         self.btn_exit = QPushButton("退出")
         self.btn_start_qq = QPushButton("开始QQ监视")
         self.btn_stop_qq = QPushButton("关闭QQ监视")
+        self.btn_show_faces = QPushButton("查看人脸库")
+        self.btn_delete_faces = QPushButton("删除人脸记录")
+        self.btn_add_face = QPushButton("添加人脸信息")
 
         self.btn_screenshot.setObjectName("PurpleButton1")
         self.btn_exit.setObjectName("PurpleButton2")
         self.btn_start_qq.setObjectName("PurpleButton3")
         self.btn_stop_qq.setObjectName("PurpleButton4")
+        self.btn_show_faces.setObjectName("PurpleButton1")
+        self.btn_delete_faces.setObjectName("PurpleButton2")
+        self.btn_add_face.setObjectName("PurpleButton3")
 
-        for btn in [self.btn_screenshot, self.btn_exit, self.btn_start_qq, self.btn_stop_qq]:
+        for btn in [
+            self.btn_screenshot, self.btn_exit,
+            self.btn_start_qq, self.btn_stop_qq,
+            self.btn_show_faces, self.btn_delete_faces, self.btn_add_face
+        ]:
             btn.setMinimumHeight(34)
             btn.setMaximumHeight(38)
             btn.setCursor(Qt.PointingHandCursor)
@@ -208,6 +220,9 @@ class MainWindow(QWidget):
         self.btn_exit.clicked.connect(self.close)
         self.btn_start_qq.clicked.connect(lambda: self.enable_qq_monitor("按钮"))
         self.btn_stop_qq.clicked.connect(lambda: self.disable_qq_monitor("按钮"))
+        self.btn_show_faces.clicked.connect(self.show_face_database)
+        self.btn_delete_faces.clicked.connect(self.delete_face_records_dialog)
+        self.btn_add_face.clicked.connect(self.add_face_record_dialog)
 
         buttons_layout = QVBoxLayout()
         buttons_layout.setContentsMargins(0, 0, 0, 0)
@@ -216,6 +231,9 @@ class MainWindow(QWidget):
         buttons_layout.addWidget(self.btn_exit)
         buttons_layout.addWidget(self.btn_start_qq)
         buttons_layout.addWidget(self.btn_stop_qq)
+        buttons_layout.addWidget(self.btn_show_faces)
+        buttons_layout.addWidget(self.btn_delete_faces)
+        buttons_layout.addWidget(self.btn_add_face)
 
         right_card = QFrame()
         right_card.setObjectName("SideCard")
@@ -442,10 +460,18 @@ class MainWindow(QWidget):
         初始化本地人脸识别模块。
 
         如果模型文件或 OpenCV contrib 组件缺失，这里只记录日志，不影响原有姿态检测、QQ 和直播功能。
+        人脸数据库查看/删除只依赖 SQLite，因此即使模型缺失也可以管理数据库。
         """
+        try:
+            self.face_db = FaceDatabase()
+        except Exception as e:
+            self.face_db = None
+            self.append_log(f"人脸数据库初始化失败：{e}")
+
         try:
             self.face_engine = FaceEngine()
             known_count = len(self.face_engine.known_faces)
+            self.face_db = self.face_engine.db
             self.append_log(f"人脸识别模块初始化成功，已加载 {known_count} 条人脸特征。")
             if known_count == 0:
                 self.append_log("人脸数据库为空：请先运行 enroll_face.py 录入人脸。")
@@ -453,6 +479,240 @@ class MainWindow(QWidget):
             self.face_engine = None
             self.append_log(f"人脸识别模块初始化失败：{e}")
             self.append_log("截图和跌倒报警仍会正常工作，但截图不会附加人脸识别结果。")
+
+    def get_face_database(self):
+        if self.face_db is None:
+            self.face_db = FaceDatabase()
+        return self.face_db
+
+    def refresh_face_database_cache(self):
+        """刷新内存中的人脸特征缓存，供添加/删除后自动调用。"""
+        if self.face_engine is not None:
+            self.face_engine.reload_database()
+            return len(self.face_engine.known_faces)
+
+        db = self.get_face_database()
+        return db.count()
+
+    def reload_face_database(self):
+        """保留给内部调用或后续扩展：手动刷新内存中的人脸特征缓存。"""
+        try:
+            known_count = self.refresh_face_database_cache()
+            self.append_log(f"人脸库已刷新，当前 {known_count} 条人脸特征。")
+            QMessageBox.information(self, "刷新成功", f"人脸库已刷新。\n当前共有 {known_count} 条人脸特征。")
+        except Exception as e:
+            self.append_log(f"刷新人脸库失败：{e}")
+            QMessageBox.warning(self, "刷新失败", f"刷新人脸库失败：\n{e}")
+
+    def add_face_record_dialog(self):
+        """使用当前摄像头画面添加一条人脸特征记录，并自动刷新人脸库缓存。"""
+        if self.face_engine is None:
+            reply = QMessageBox.question(
+                self,
+                "人脸识别未初始化",
+                "人脸识别模块当前不可用，可能是模型文件缺失或 OpenCV contrib 未正确安装。\n是否尝试重新初始化？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply == QMessageBox.Yes:
+                self.init_face_engine()
+
+            if self.face_engine is None:
+                QMessageBox.warning(self, "无法添加", "人脸识别模块仍不可用，无法从画面中提取人脸特征。")
+                return
+
+        user_id, ok = QInputDialog.getText(
+            self,
+            "添加人脸信息",
+            "请输入用户ID，例如 001："
+        )
+        if not ok:
+            return
+
+        user_id = user_id.strip()
+        if not user_id:
+            QMessageBox.warning(self, "输入无效", "用户ID不能为空。")
+            return
+
+        name, ok = QInputDialog.getText(
+            self,
+            "添加人脸信息",
+            "请输入姓名："
+        )
+        if not ok:
+            return
+
+        name = name.strip()
+        if not name:
+            QMessageBox.warning(self, "输入无效", "姓名不能为空。")
+            return
+
+        if self.current_face_frame is not None:
+            frame = self.current_face_frame.copy()
+        elif self.current_frame is not None:
+            frame = self.current_frame.copy()
+        else:
+            QMessageBox.warning(self, "无法添加", "当前还没有可用的摄像头画面。")
+            return
+
+        try:
+            faces = self.face_engine.detect_faces(frame)
+        except Exception as e:
+            self.append_log(f"添加人脸时检测失败：{e}")
+            QMessageBox.warning(self, "检测失败", f"人脸检测失败：\n{e}")
+            return
+
+        if len(faces) == 0:
+            QMessageBox.warning(self, "未检测到人脸", "当前画面中没有检测到人脸，请面向摄像头后重试。")
+            return
+
+        if len(faces) > 1:
+            QMessageBox.warning(self, "人脸数量过多", f"当前画面中检测到 {len(faces)} 张人脸。\n添加人脸信息时请保证画面中只有一个人。")
+            return
+
+        try:
+            feature = self.face_engine.get_feature(frame, faces[0])
+            db = self.get_face_database()
+            record_id = db.add_face(user_id, name, feature)
+
+            known_count = self.refresh_face_database_cache()
+
+            self.append_log(
+                f"已添加人脸记录：ID={record_id}，用户ID={user_id}，姓名={name}；"
+                f"人脸库已自动刷新，当前 {known_count} 条人脸特征。"
+            )
+
+            QMessageBox.information(
+                self,
+                "添加完成",
+                f"已添加人脸记录。\n记录ID：{record_id}\n用户ID：{user_id}\n姓名：{name}\n\n人脸库已自动刷新，当前共有 {known_count} 条人脸特征。"
+            )
+        except Exception as e:
+            self.append_log(f"添加人脸记录失败：{e}")
+            QMessageBox.warning(self, "添加失败", f"添加人脸记录失败：\n{e}")
+
+    def build_face_database_text(self, max_records=80):
+        db = self.get_face_database()
+        people = db.list_people()
+        records = db.list_faces(limit=max_records)
+        total = db.count()
+
+        lines = [
+            f"数据库路径：{db.db_path}",
+            f"总人脸特征数：{total}",
+            "",
+            "【按人员汇总】",
+        ]
+
+        if not people:
+            lines.append("当前没有录入任何人脸。")
+        else:
+            for item in people:
+                lines.append(
+                    f"用户ID：{item['user_id']} | 姓名：{item['name']} | "
+                    f"特征数：{item['feature_count']} | 最近录入：{item['last_created_at']}"
+                )
+
+        lines.extend(["", f"【记录列表，最多显示 {max_records} 条】"])
+
+        if not records:
+            lines.append("无记录。")
+        else:
+            for row in records:
+                lines.append(
+                    f"ID={row['id']} | 用户ID={row['user_id']} | 姓名={row['name']} | "
+                    f"维度={row['dim']} | 录入时间={row['created_at']}"
+                )
+
+            if total > max_records:
+                lines.append(f"……还有 {total - max_records} 条未显示，可用 manage_faces.py list 查看全部。")
+
+        lines.extend([
+            "",
+            "删除说明：",
+            "1. 可在本窗口点击“删除人脸记录”。",
+            "2. 也可命令行执行：python manage_faces.py list",
+            "3. 在主界面添加或删除人脸记录后，系统会自动刷新主程序中的人脸特征缓存。",
+        ])
+
+        return "\n".join(lines)
+
+    def show_face_database(self):
+        try:
+            text = self.build_face_database_text()
+            dialog = QMessageBox(self)
+            dialog.setWindowTitle("人脸库")
+            dialog.setText(text)
+            dialog.setIcon(QMessageBox.Information)
+            dialog.exec_()
+        except Exception as e:
+            self.append_log(f"查看人脸库失败：{e}")
+            QMessageBox.warning(self, "查看失败", f"查看人脸库失败：\n{e}")
+
+    def delete_face_records_dialog(self):
+        help_text = (
+            "请输入删除目标：\n"
+            "1. 删除指定记录ID：1,2,3\n"
+            "2. 删除某个用户ID全部记录：user:001\n"
+            "3. 删除某个姓名全部记录：name:张三\n"
+            "4. 清空全部记录：all\n"
+        )
+
+        text, ok = QInputDialog.getText(self, "删除人脸记录", help_text)
+        if not ok:
+            return
+
+        command = text.strip()
+        if not command:
+            return
+
+        try:
+            db = self.get_face_database()
+
+            if command.lower() == "all":
+                target_desc = f"全部 {db.count()} 条人脸特征"
+                delete_func = db.clear
+            elif command.lower().startswith("user:"):
+                user_id = command.split(":", 1)[1].strip()
+                target_count = len(db.list_faces(user_id=user_id))
+                target_desc = f"用户ID={user_id} 的 {target_count} 条人脸特征"
+                delete_func = lambda: db.delete_by_user_id(user_id)
+            elif command.lower().startswith("name:"):
+                name = command.split(":", 1)[1].strip()
+                target_count = len(db.list_faces(name=name))
+                target_desc = f"姓名={name} 的 {target_count} 条人脸特征"
+                delete_func = lambda: db.delete_by_name(name)
+            else:
+                ids = [item.strip() for item in command.replace("，", ",").split(",") if item.strip()]
+                ids = [int(item) for item in ids]
+                target_count = len([row for row in db.list_faces() if row["id"] in ids])
+                target_desc = f"记录ID={ids} 的 {target_count} 条人脸特征"
+                delete_func = lambda: db.delete_by_ids(ids)
+
+            reply = QMessageBox.question(
+                self,
+                "确认删除",
+                f"即将删除：{target_desc}。\n删除后不可恢复，是否继续？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+
+            if reply != QMessageBox.Yes:
+                return
+
+            deleted = delete_func()
+            known_count = self.refresh_face_database_cache()
+
+            self.append_log(f"已删除 {deleted} 条人脸特征，人脸库已自动刷新，当前 {known_count} 条人脸特征。")
+            QMessageBox.information(
+                self,
+                "删除完成",
+                f"已删除 {deleted} 条人脸特征。\n人脸库已自动刷新，当前共有 {known_count} 条人脸特征。"
+            )
+
+        except Exception as e:
+            self.append_log(f"删除人脸记录失败：{e}")
+            QMessageBox.warning(self, "删除失败", f"删除人脸记录失败：\n{e}")
 
     def init_qq(self):
         try:
