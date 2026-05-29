@@ -471,6 +471,8 @@ class BodyPoseDetector:
             "num_bodies": num_bodies,
             "poses": pose_items,
             "pose_state": make_pose_state(pose_items),
+            # 给人脸识别使用的原始彩色图，不叠加骨架，避免骨架线影响人脸特征。
+            "color_frame": color_image.copy(),
         }
 
         return display_image, info

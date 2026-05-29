@@ -1,8 +1,8 @@
+numpy==1.26.4
+opencv-contrib-python==4.10.0.84
+pykinect-azure==0.1.0
 PyQt5
-opencv-python
-pykinect-azure
 requests
 websockets
 python-dotenv
 qrcode
-pillow

@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
 from pose_detector import BodyPoseDetector
 from qq_sender import QQController
 from live_stream_manager import LiveStreamManager
+from face_engine import FaceEngine
 
 
 QQ_SEND_MIN_INTERVAL_SECONDS = 3.0
@@ -74,6 +75,10 @@ class MainWindow(QWidget):
         self.resize(1280, 760)
 
         self.current_frame = None
+        # 保存一份尽量干净的彩色帧给人脸识别使用。
+        # 如果 pose_detector 提供 color_frame，就使用未叠加骨架的原始彩色图；
+        # 否则退回使用当前显示帧。
+        self.current_face_frame = None
         self.current_info = None
 
         self.qq_monitor_enabled = False
@@ -87,6 +92,11 @@ class MainWindow(QWidget):
         self.last_fall_alert_time = 0
 
         self.qq_controller = None
+
+        # 人脸识别器：只在截图时调用，避免影响平时实时检测延迟。
+        self.face_engine = None
+        self.last_screenshot_face_results = []
+        self.last_screenshot_face_error = None
 
         # 直播管理器：QQ 发送“直播”后启动，发送“结束直播”后停止。
         self.live_stream_running = False
@@ -105,6 +115,7 @@ class MainWindow(QWidget):
         self.bridge.log_signal.connect(self.append_log)
 
         self.init_ui()
+        self.init_face_engine()
         self.init_qq()
         self.start_camera()
 
@@ -394,6 +405,22 @@ class MainWindow(QWidget):
             background: #1e1637;
             color: #f3e8ff;
         }
+        QMessageBox QLabel {
+            color: #ffffff;
+            background: transparent;
+            font-family: 'Microsoft YaHei UI', 'Segoe UI', Arial;
+            font-size: 12px;
+        }
+        QMessageBox QPushButton {
+            background: #7c3aed;
+            color: #ffffff;
+            border-radius: 10px;
+            padding: 6px 14px;
+            min-width: 72px;
+        }
+        QMessageBox QPushButton:hover {
+            background: #8b5cf6;
+        }
         """)
 
     def update_status_badges(self):
@@ -409,6 +436,23 @@ class MainWindow(QWidget):
         self.live_state_label.setStyleSheet(
             "color:#dbeafe;" if live_on else "color:#e9d5ff;"
         )
+
+    def init_face_engine(self):
+        """
+        初始化本地人脸识别模块。
+
+        如果模型文件或 OpenCV contrib 组件缺失，这里只记录日志，不影响原有姿态检测、QQ 和直播功能。
+        """
+        try:
+            self.face_engine = FaceEngine()
+            known_count = len(self.face_engine.known_faces)
+            self.append_log(f"人脸识别模块初始化成功，已加载 {known_count} 条人脸特征。")
+            if known_count == 0:
+                self.append_log("人脸数据库为空：请先运行 enroll_face.py 录入人脸。")
+        except Exception as e:
+            self.face_engine = None
+            self.append_log(f"人脸识别模块初始化失败：{e}")
+            self.append_log("截图和跌倒报警仍会正常工作，但截图不会附加人脸识别结果。")
 
     def init_qq(self):
         try:
@@ -480,6 +524,16 @@ class MainWindow(QWidget):
 
     def on_frame_ready(self, frame, info):
         self.current_frame = frame.copy()
+
+        raw_color_frame = None
+        if isinstance(info, dict):
+            raw_color_frame = info.get("color_frame")
+
+        if raw_color_frame is not None:
+            self.current_face_frame = raw_color_frame.copy()
+        else:
+            self.current_face_frame = frame.copy()
+
         self.current_info = info
 
         # 如果直播已启动，则把当前“彩色图 + 骨架”帧写入 FFmpeg。
@@ -590,7 +644,66 @@ class MainWindow(QWidget):
 
         return "\n".join(lines)
 
-    def build_fall_alert_message(self, info):
+    def build_face_results_lines(self, face_results=None, face_error=None):
+        """
+        把最近一次截图的人脸识别结果格式化成文本行。
+        普通截图、QQ截图、跌倒报警都复用这段逻辑。
+        """
+        lines = ["人脸识别结果："]
+
+        if face_error:
+            lines.append(f"人脸识别失败：{face_error}")
+        elif self.face_engine is None:
+            lines.append("人脸识别模块未启用或初始化失败。")
+        elif not face_results:
+            lines.append("未检测到可识别的人脸。")
+        else:
+            for index, face in enumerate(face_results, start=1):
+                name = face.get("name", "Unknown")
+                score = float(face.get("score", -1.0))
+
+                if name == "Unknown":
+                    lines.append(f"人脸{index}：未知人员，相似度 {score:.2f}")
+                else:
+                    lines.append(f"人脸{index}：{name}，相似度 {score:.2f}")
+
+        return lines
+
+    def _scale_face_results_for_frame(self, face_results, source_frame, target_frame):
+        """
+        人脸检测通常在未叠加骨架的原始彩色帧上做，截图保存的是当前显示帧。
+        正常情况下两者尺寸一致；如果尺寸不同，这里把人脸框缩放到截图尺寸。
+        """
+        if not face_results or source_frame is None or target_frame is None:
+            return face_results
+
+        source_h, source_w = source_frame.shape[:2]
+        target_h, target_w = target_frame.shape[:2]
+
+        if source_w == target_w and source_h == target_h:
+            return face_results
+
+        if source_w <= 0 or source_h <= 0:
+            return face_results
+
+        scale_x = target_w / source_w
+        scale_y = target_h / source_h
+
+        scaled_results = []
+        for item in face_results:
+            copied = dict(item)
+            x, y, w, h = copied.get("box", (0, 0, 0, 0))
+            copied["box"] = (
+                int(x * scale_x),
+                int(y * scale_y),
+                int(w * scale_x),
+                int(h * scale_y),
+            )
+            scaled_results.append(copied)
+
+        return scaled_results
+
+    def build_fall_alert_message(self, info, face_results=None, face_error=None):
         timestamp = info["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
         fall_people = [
             item for item in info["poses"]
@@ -612,6 +725,9 @@ class MainWindow(QWidget):
                 lines.append(
                     f"人物{item['person_index']}：{item['pose']}"
                 )
+
+        lines.append("")
+        lines.extend(self.build_face_results_lines(face_results, face_error))
 
         lines.append("")
         lines.append("注意：本报警不会自动开启监听。")
@@ -660,10 +776,11 @@ class MainWindow(QWidget):
 
         关键点：
         1. 不管 QQ 监视是否开启，只要检测到“疑似跌倒”就报警。
-        2. 报警会自动截图并通过 QQ 发送截图。
-        3. 报警不会自动开启监听。
-        4. 同一段连续跌倒只报警一次；恢复正常后才允许下次报警。
-        5. 额外加入冷却时间，避免误识别抖动导致频繁报警。
+        2. 跌倒报警不再单独做人脸识别；它复用截图流程中的人脸识别结果。
+        3. 报警截图会通过 save_screenshot_to_file() 自动标注人脸框和姓名。
+        4. 报警不会自动开启监听。
+        5. 同一段连续跌倒只报警一次；恢复正常后才允许下一次报警。
+        6. 额外加入冷却时间，避免误识别抖动导致频繁报警。
         """
         if not self.qq_controller:
             return
@@ -688,8 +805,12 @@ class MainWindow(QWidget):
         self.fall_alert_active = True
         self.last_fall_alert_time = now
 
-        path = self.save_screenshot_to_file()
-        message = self.build_fall_alert_message(info)
+        # 跌倒会自动截图；截图函数内部会统一做人脸识别和标注。
+        path = self.save_screenshot_to_file(prefix="fall_alert")
+        face_results = list(self.last_screenshot_face_results or [])
+        face_error = self.last_screenshot_face_error
+
+        message = self.build_fall_alert_message(info, face_results, face_error)
 
         thread = threading.Thread(
             target=self.send_fall_alert_background,
@@ -783,20 +904,76 @@ class MainWindow(QWidget):
             self.log_text.append(f"[{now}] {text}")
             self.log_text.moveCursor(QTextCursor.End)
 
-    def save_screenshot_to_file(self):
+    def save_screenshot_to_file(self, frame=None, prefix="screenshot"):
         """
-        保存当前彩色图 + 骨架截图，返回 Path。
+        保存截图，返回 Path。
+
+        每次截图都会统一做人脸识别：
+        - 优先用未叠加骨架的 current_face_frame 做识别，减少骨架线对人脸特征的影响；
+        - 在最终截图上画出人脸框和姓名；
+        - 识别结果保存到 self.last_screenshot_face_results / self.last_screenshot_face_error，
+          供按钮截图、QQ截图和跌倒报警文本复用。
         """
-        if self.current_frame is None:
-            return None
+        self.last_screenshot_face_results = []
+        self.last_screenshot_face_error = None
+
+        if frame is None:
+            if self.current_frame is None:
+                return None
+            screenshot_frame = self.current_frame.copy()
+            recognition_frame = (
+                self.current_face_frame.copy()
+                if self.current_face_frame is not None
+                else screenshot_frame.copy()
+            )
+        else:
+            screenshot_frame = frame.copy()
+            recognition_frame = (
+                self.current_face_frame.copy()
+                if self.current_face_frame is not None
+                else screenshot_frame.copy()
+            )
+
+        # 统一在截图前做人脸识别，并把结果画到截图上。
+        if self.face_engine is not None and recognition_frame is not None:
+            try:
+                face_results = self.face_engine.recognize_faces(recognition_frame)
+                self.last_screenshot_face_results = face_results
+
+                if face_results:
+                    draw_results = self._scale_face_results_for_frame(
+                        face_results,
+                        recognition_frame,
+                        screenshot_frame,
+                    )
+                    screenshot_frame = self.face_engine.draw_results(
+                        screenshot_frame,
+                        draw_results,
+                    )
+
+                self.append_log(f"截图人脸识别完成，检测到 {len(face_results)} 张人脸。")
+            except Exception as e:
+                self.last_screenshot_face_results = []
+                self.last_screenshot_face_error = str(e)
+                self.append_log(f"截图人脸识别失败：{e}")
 
         screenshots_dir = Path(__file__).resolve().parent / "screenshots"
         screenshots_dir.mkdir(exist_ok=True)
 
-        filename = time.strftime("screenshot_%Y%m%d_%H%M%S.png")
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        millisecond = int((time.time() % 1) * 1000)
+        filename = f"{prefix}_{timestamp}_{millisecond:03d}.png"
         path = screenshots_dir / filename
 
-        ok = cv2.imwrite(str(path), self.current_frame)
+        image = screenshot_frame
+        if image is None:
+            return None
+
+        # OpenCV imwrite 对 BGR/GRAY 最稳定；BGRA 也能写 PNG，但这里统一转成 BGR。
+        if len(image.shape) == 3 and image.shape[2] == 4:
+            image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+
+        ok = cv2.imwrite(str(path), image)
 
         if not ok:
             return None
@@ -810,7 +987,13 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "截图失败", "当前还没有可保存的摄像头画面，或保存失败。")
             return
 
-        QMessageBox.information(self, "截图成功", f"截图已保存：\n{path}")
+        face_text = "\n".join(
+            self.build_face_results_lines(
+                self.last_screenshot_face_results,
+                self.last_screenshot_face_error,
+            )
+        )
+        QMessageBox.information(self, "截图成功", f"截图已保存：\n{path}\n\n{face_text}")
         self.append_log(f"截图已保存：{path}")
 
     def handle_qq_screenshot_request(self):
@@ -829,16 +1012,20 @@ class MainWindow(QWidget):
 
         self.append_log(f"QQ 截图已保存：{path}")
 
+        face_results = list(self.last_screenshot_face_results or [])
+        face_error = self.last_screenshot_face_error
+
         thread = threading.Thread(
             target=self.send_qq_screenshot_background,
-            args=(path,),
+            args=(path, face_results, face_error),
             daemon=True
         )
         thread.start()
 
-    def send_qq_screenshot_background(self, path):
+    def send_qq_screenshot_background(self, path, face_results=None, face_error=None):
         try:
-            self.qq_controller.send_text(f"截图成功，正在发送图片：{path.name}")
+            face_text = "\n".join(self.build_face_results_lines(face_results, face_error))
+            self.qq_controller.send_text(f"截图成功，正在发送图片：{path.name}\n\n{face_text}")
             status_code, result = self.qq_controller.send_image(path)
             self.bridge.log_signal.emit(f"QQ截图发送完成，HTTP状态码：{status_code}，返回：{result}")
         except Exception as e:
