@@ -8,7 +8,8 @@ from PyQt5.QtGui import QImage, QPixmap, QFont, QTextCursor
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QPushButton, QTextEdit,
     QHBoxLayout, QVBoxLayout, QMessageBox, QFrame,
-    QGridLayout, QSizePolicy, QInputDialog, QDialog
+    QGridLayout, QSizePolicy, QDialog,
+    QComboBox, QLineEdit
 )
 
 from pose_detector import BodyPoseDetector
@@ -25,6 +26,120 @@ FALL_ALERT_COOLDOWN_SECONDS = 30.0
 
 # 跌倒报警提示语。注意：这不会自动开启监听。
 FALL_ALERT_TEXT = "检测到人物摔倒，请打开监听查看详细情况。"
+
+
+# 主界面同款弹窗样式。用于删除人脸记录相关弹窗，避免使用系统默认白色弹窗。
+THEMED_POPUP_STYLESHEET = """
+QDialog, QMessageBox {
+    background: #1e1637;
+    color: #f3e8ff;
+    font-family: 'Microsoft YaHei UI', 'Segoe UI', Arial;
+}
+QLabel {
+    color: #f3e8ff;
+    font-size: 12px;
+}
+QLabel#PanelTitle {
+    color: #faf5ff;
+    font-size: 18px;
+    font-weight: 700;
+}
+QLabel#PanelSubTitle {
+    color: #c4b5fd;
+    font-size: 11px;
+}
+QLabel#WarningText {
+    color: #fcd34d;
+    font-size: 11px;
+}
+QLabel#ErrorText {
+    color: #fca5a5;
+    font-size: 11px;
+}
+QFrame#DialogCard {
+    background: #2a1f49;
+    border: 1px solid #5b3f8f;
+    border-radius: 16px;
+}
+QLineEdit, QComboBox {
+    background: #35285f;
+    color: #f5f3ff;
+    border: 1px solid #6d4aa3;
+    border-radius: 12px;
+    padding: 8px 10px;
+    font-size: 12px;
+    selection-background-color: #7c3aed;
+    selection-color: #ffffff;
+}
+QLineEdit:focus, QComboBox:focus {
+    border: 1px solid #a78bfa;
+    background: #3c2d68;
+}
+QComboBox::drop-down {
+    border: none;
+    width: 28px;
+}
+QComboBox::down-arrow {
+    image: none;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #c4b5fd;
+    margin-right: 10px;
+}
+QComboBox QAbstractItemView {
+    background: #35285f;
+    color: #f5f3ff;
+    selection-background-color: #7c3aed;
+    selection-color: #ffffff;
+    border: 1px solid #6d4aa3;
+    outline: 0px;
+}
+QPushButton {
+    border: none;
+    border-radius: 13px;
+    padding: 8px 14px;
+    color: white;
+    font-size: 12px;
+    font-weight: 700;
+    min-height: 28px;
+}
+QPushButton#PurpleButton1 {
+    background: #a78bfa;
+}
+QPushButton#PurpleButton1:hover {
+    background: #b99cff;
+}
+QPushButton#PurpleButton1:pressed {
+    background: #8b5cf6;
+}
+QPushButton#PurpleButton2 {
+    background: #8b5cf6;
+}
+QPushButton#PurpleButton2:hover {
+    background: #9f7aea;
+}
+QPushButton#PurpleButton2:pressed {
+    background: #7c3aed;
+}
+QPushButton#PurpleButton3 {
+    background: #7c3aed;
+}
+QPushButton#PurpleButton3:hover {
+    background: #8b5cf6;
+}
+QPushButton#PurpleButton3:pressed {
+    background: #6d28d9;
+}
+QPushButton#PurpleButton4 {
+    background: #5b21b6;
+}
+QPushButton#PurpleButton4:hover {
+    background: #6d28d9;
+}
+QPushButton#PurpleButton4:pressed {
+    background: #4c1d95;
+}
+"""
 
 
 class CameraWorker(QThread):
@@ -86,6 +201,7 @@ class FaceEnrollDialog(QDialog):
         self.completed = False
 
         self.setWindowTitle("添加人脸信息")
+        self.setObjectName("ThemedDialog")
         self.resize(900, 650)
         self.setModal(True)
 
@@ -129,9 +245,9 @@ class FaceEnrollDialog(QDialog):
         layout.addWidget(self.status_label)
         layout.addLayout(button_row)
 
-        # 复用主窗口主题。
+        # 复用主窗口主题，并叠加弹窗专用紫色样式，避免弹窗背景/按钮回退成系统默认样式。
         try:
-            self.setStyleSheet(parent_window.styleSheet())
+            self.setStyleSheet(parent_window.styleSheet() + "\n" + THEMED_POPUP_STYLESHEET)
         except Exception:
             pass
 
@@ -206,33 +322,65 @@ class FaceEnrollDialog(QDialog):
             base += f"\n{message}"
         self.status_label.setText(base)
 
+    def show_themed_message(self, title, text, icon=QMessageBox.Information, buttons=QMessageBox.Ok, default_button=QMessageBox.Ok):
+        """显示主界面同款紫色风格提示框。"""
+        if hasattr(self.parent_window, "show_themed_message"):
+            return self.parent_window.show_themed_message(
+                title=title,
+                text=text,
+                icon=icon,
+                buttons=buttons,
+                default_button=default_button,
+                parent=self,
+            )
+
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle(title)
+        dialog.setText(text)
+        dialog.setIcon(icon)
+        dialog.setStandardButtons(buttons)
+        if default_button is not None:
+            dialog.setDefaultButton(default_button)
+        dialog.setStyleSheet(THEMED_POPUP_STYLESHEET)
+        return dialog.exec_()
+
+    def ask_themed_question(self, title, text, default_button=QMessageBox.No):
+        """显示主界面同款紫色风格确认框。"""
+        return self.show_themed_message(
+            title=title,
+            text=text,
+            icon=QMessageBox.Question,
+            buttons=QMessageBox.Yes | QMessageBox.No,
+            default_button=default_button,
+        )
+
     def capture_face(self):
         frame = self._get_current_frame()
         if frame is None:
-            QMessageBox.warning(self, "无法拍摄", "当前还没有可用的摄像头画面。")
+            self.show_themed_message("无法拍摄", "当前还没有可用的摄像头画面。", icon=QMessageBox.Warning)
             return
 
         face_engine = self.parent_window.face_engine
         if face_engine is None:
-            QMessageBox.warning(self, "无法拍摄", "人脸识别模块不可用，无法提取人脸特征。")
+            self.show_themed_message("无法拍摄", "人脸识别模块不可用，无法提取人脸特征。", icon=QMessageBox.Warning)
             return
 
         try:
             faces = face_engine.detect_faces(frame)
         except Exception as e:
             self.parent_window.append_log(f"添加人脸时检测失败：{e}")
-            QMessageBox.warning(self, "检测失败", f"人脸检测失败：\n{e}")
+            self.show_themed_message("检测失败", f"人脸检测失败：\n{e}", icon=QMessageBox.Warning)
             return
 
         if len(faces) == 0:
-            QMessageBox.warning(self, "未检测到人脸", "当前画面中没有检测到人脸，请面向摄像头后重试。")
+            self.show_themed_message("未检测到人脸", "当前画面中没有检测到人脸，请面向摄像头后重试。", icon=QMessageBox.Warning)
             return
 
         if len(faces) > 1:
-            QMessageBox.warning(
-                self,
+            self.show_themed_message(
                 "人脸数量过多",
                 f"当前画面中检测到 {len(faces)} 张人脸。\n录入时请保证画面中只有一个人。",
+                icon=QMessageBox.Warning,
             )
             return
 
@@ -249,24 +397,24 @@ class FaceEnrollDialog(QDialog):
             self.update_status(f"本次拍摄成功：记录ID={record_id}。")
         except Exception as e:
             self.parent_window.append_log(f"添加人脸记录失败：{e}")
-            QMessageBox.warning(self, "添加失败", f"添加人脸记录失败：\n{e}")
+            self.show_themed_message("添加失败", f"添加人脸记录失败：\n{e}", icon=QMessageBox.Warning)
 
     def finish_enroll(self):
         saved = len(self.saved_record_ids)
         if saved < self.min_samples:
-            QMessageBox.warning(
-                self,
+            self.show_themed_message(
                 "样本不足",
                 f"当前只录入了 {saved} 张，至少需要 {self.min_samples} 张。\n请继续点击“拍摄”。",
+                icon=QMessageBox.Warning,
             )
             return
 
         self.completed = True
         self.parent_window.refresh_face_database_cache()
-        QMessageBox.information(
-            self,
+        self.show_themed_message(
             "录入完成",
             f"编号：{self.user_id}\n姓名：{self.name}\n本次共录入：{saved} 张人脸样本。",
+            icon=QMessageBox.Information,
         )
         self.accept()
 
@@ -278,12 +426,10 @@ class FaceEnrollDialog(QDialog):
         if saved == 0:
             return super().reject()
 
-        reply = QMessageBox.question(
-            self,
+        reply = self.ask_themed_question(
             "放弃录入？",
             f"当前已拍摄 {saved} 张，但尚未点击“完成”。\n是否放弃本次录入并删除这些已保存样本？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            default_button=QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
             try:
@@ -305,6 +451,201 @@ class FaceEnrollDialog(QDialog):
             event.accept()
         else:
             event.ignore()
+
+
+class AddFaceInfoDialog(QDialog):
+    """主界面同款风格的添加人脸信息弹窗。"""
+
+    def __init__(self, parent_window, user_id):
+        super().__init__(parent_window)
+        self.setWindowTitle("添加人脸信息")
+        self.setObjectName("ThemedDialog")
+        self.setModal(True)
+        self.resize(500, 280)
+        self.user_id = str(user_id)
+        self.name_value = ""
+
+        try:
+            self.setStyleSheet(THEMED_POPUP_STYLESHEET)
+        except Exception:
+            pass
+
+        title_label = QLabel("添加人脸信息")
+        title_label.setObjectName("PanelTitle")
+
+        subtitle_label = QLabel("系统已自动分配编号，请输入姓名后开始录入人脸样本。")
+        subtitle_label.setObjectName("PanelSubTitle")
+        subtitle_label.setWordWrap(True)
+
+        card = QFrame()
+        card.setObjectName("DialogCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(16, 14, 16, 14)
+        card_layout.setSpacing(10)
+
+        user_id_label = QLabel(f"自动分配编号：{self.user_id}")
+        user_id_label.setObjectName("WarningText")
+
+        name_label = QLabel("姓名")
+        name_label.setObjectName("PanelSubTitle")
+
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("请输入姓名，例如：张三")
+        self.name_edit.textChanged.connect(lambda: self.error_label.clear())
+        self.name_edit.returnPressed.connect(self.accept)
+
+        self.error_label = QLabel()
+        self.error_label.setObjectName("ErrorText")
+        self.error_label.setWordWrap(True)
+
+        card_layout.addWidget(user_id_label)
+        card_layout.addWidget(name_label)
+        card_layout.addWidget(self.name_edit)
+        card_layout.addWidget(self.error_label)
+
+        self.btn_cancel = QPushButton("取消")
+        self.btn_start = QPushButton("开始录入")
+        self.btn_cancel.setObjectName("PurpleButton4")
+        self.btn_start.setObjectName("PurpleButton3")
+        self.btn_cancel.setCursor(Qt.PointingHandCursor)
+        self.btn_start.setCursor(Qt.PointingHandCursor)
+        self.btn_cancel.clicked.connect(self.reject)
+        self.btn_start.clicked.connect(self.accept)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        button_row.addWidget(self.btn_cancel)
+        button_row.addWidget(self.btn_start)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+        layout.addWidget(title_label)
+        layout.addWidget(subtitle_label)
+        layout.addWidget(card)
+        layout.addLayout(button_row)
+
+        self.name_edit.setFocus()
+
+    def accept(self):
+        name = self.name_edit.text().strip()
+        if not name:
+            self.error_label.setText("姓名不能为空。")
+            self.name_edit.setFocus()
+            return
+
+        self.name_value = name
+        super().accept()
+
+
+class DeleteFaceRecordsDialog(QDialog):
+    """主界面同款风格的删除人脸记录弹窗。"""
+
+    def __init__(self, parent_window, delete_options):
+        super().__init__(parent_window)
+        self.setWindowTitle("删除人脸记录")
+        self.setModal(True)
+        self.resize(500, 300)
+        self.selected_option = None
+        self.input_value = ""
+
+        try:
+            self.setStyleSheet(THEMED_POPUP_STYLESHEET)
+        except Exception:
+            pass
+
+        title_label = QLabel("删除人脸记录")
+        title_label.setObjectName("PanelTitle")
+
+        subtitle_label = QLabel("请选择删除方式，并输入对应信息。删除后不可恢复。")
+        subtitle_label.setObjectName("PanelSubTitle")
+        subtitle_label.setWordWrap(True)
+
+        card = QFrame()
+        card.setObjectName("DialogCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(16, 14, 16, 14)
+        card_layout.setSpacing(10)
+
+        option_label = QLabel("删除方式")
+        option_label.setObjectName("PanelSubTitle")
+
+        self.option_combo = QComboBox()
+        self.option_combo.addItems(delete_options)
+        self.option_combo.currentIndexChanged.connect(self.update_input_hint)
+
+        input_label = QLabel("删除条件")
+        input_label.setObjectName("PanelSubTitle")
+
+        self.input_edit = QLineEdit()
+        self.input_edit.textChanged.connect(lambda: self.error_label.clear())
+
+        self.hint_label = QLabel()
+        self.hint_label.setObjectName("WarningText")
+        self.hint_label.setWordWrap(True)
+
+        self.error_label = QLabel()
+        self.error_label.setObjectName("ErrorText")
+        self.error_label.setWordWrap(True)
+
+        card_layout.addWidget(option_label)
+        card_layout.addWidget(self.option_combo)
+        card_layout.addWidget(input_label)
+        card_layout.addWidget(self.input_edit)
+        card_layout.addWidget(self.hint_label)
+        card_layout.addWidget(self.error_label)
+
+        self.btn_cancel = QPushButton("取消")
+        self.btn_delete = QPushButton("下一步")
+        self.btn_cancel.setObjectName("PurpleButton4")
+        self.btn_delete.setObjectName("PurpleButton2")
+        self.btn_cancel.setCursor(Qt.PointingHandCursor)
+        self.btn_delete.setCursor(Qt.PointingHandCursor)
+        self.btn_cancel.clicked.connect(self.reject)
+        self.btn_delete.clicked.connect(self.accept)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        button_row.addWidget(self.btn_cancel)
+        button_row.addWidget(self.btn_delete)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+        layout.addWidget(title_label)
+        layout.addWidget(subtitle_label)
+        layout.addWidget(card)
+        layout.addLayout(button_row)
+
+        self.update_input_hint()
+
+    def update_input_hint(self):
+        option = self.option_combo.currentText()
+        self.input_edit.clear()
+        self.error_label.clear()
+
+        if "用户ID" in option:
+            self.input_edit.setPlaceholderText("请输入用户ID，例如：1")
+            self.hint_label.setText("将删除该用户ID下的全部人脸样本。")
+        else:
+            self.input_edit.setPlaceholderText("请输入姓名，例如：张三")
+            self.hint_label.setText("将删除该姓名下的全部人脸样本。")
+
+    def accept(self):
+        option = self.option_combo.currentText()
+        value = self.input_edit.text().strip()
+
+        if not value:
+            if "用户ID" in option:
+                self.error_label.setText("用户ID不能为空。")
+            else:
+                self.error_label.setText("姓名不能为空。")
+            self.input_edit.setFocus()
+            return
+
+        self.selected_option = option
+        self.input_value = value
+        super().accept()
 
 
 class MainWindow(QWidget):
@@ -746,22 +1087,20 @@ class MainWindow(QWidget):
     def add_face_record_dialog(self):
         """打开多样本人脸录入窗口，自动分配从 1 开始的最小空闲编号。"""
         if self.face_engine is None:
-            reply = QMessageBox.question(
-                self,
+            reply = self.ask_themed_question(
                 "人脸识别未初始化",
                 "人脸识别模块当前不可用，可能是模型文件缺失或 OpenCV contrib 未正确安装。\n是否尝试重新初始化？",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
+                default_button=QMessageBox.Yes,
             )
             if reply == QMessageBox.Yes:
                 self.init_face_engine()
 
             if self.face_engine is None:
-                QMessageBox.warning(self, "无法添加", "人脸识别模块仍不可用，无法从画面中提取人脸特征。")
+                self.show_themed_message("无法添加", "人脸识别模块仍不可用，无法从画面中提取人脸特征。", icon=QMessageBox.Warning)
                 return
 
         if self.current_face_frame is None and self.current_frame is None:
-            QMessageBox.warning(self, "无法添加", "当前还没有可用的摄像头画面。")
+            self.show_themed_message("无法添加", "当前还没有可用的摄像头画面。", icon=QMessageBox.Warning)
             return
 
         try:
@@ -769,21 +1108,14 @@ class MainWindow(QWidget):
             user_id = str(db.get_next_available_user_id())
         except Exception as e:
             self.append_log(f"自动分配人脸编号失败：{e}")
-            QMessageBox.warning(self, "无法添加", f"自动分配人脸编号失败：\n{e}")
+            self.show_themed_message("无法添加", f"自动分配人脸编号失败：\n{e}", icon=QMessageBox.Warning)
             return
 
-        name, ok = QInputDialog.getText(
-            self,
-            "添加人脸信息",
-            f"系统将自动分配编号：{user_id}\n请输入姓名："
-        )
-        if not ok:
+        info_dialog = AddFaceInfoDialog(self, user_id)
+        if info_dialog.exec_() != QDialog.Accepted:
             return
 
-        name = name.strip()
-        if not name:
-            QMessageBox.warning(self, "输入无效", "姓名不能为空。")
-            return
+        name = info_dialog.name_value
 
         dialog = FaceEnrollDialog(
             parent_window=self,
@@ -801,9 +1133,14 @@ class MainWindow(QWidget):
             )
 
     def build_face_database_text(self, max_records=80):
+        """
+        构建“查看人脸库”窗口内容。
+
+        按需求只展示“按人员汇总”，不再展示每条人脸特征记录列表。
+        max_records 参数保留仅为兼容旧调用，不再使用。
+        """
         db = self.get_face_database()
         people = db.list_people()
-        records = db.list_faces(limit=max_records)
         total = db.count()
 
         lines = [
@@ -819,30 +1156,9 @@ class MainWindow(QWidget):
             for item in people:
                 lines.append(
                     f"用户ID：{item['user_id']} | 姓名：{item['name']} | "
-                    f"特征数：{item['feature_count']} | 最近录入：{item['last_created_at']}"
+                    f"特征数：{item['feature_count']} | "
+                    f"首次录入：{item['first_created_at']} | 最近录入：{item['last_created_at']}"
                 )
-
-        lines.extend(["", f"【记录列表，最多显示 {max_records} 条】"])
-
-        if not records:
-            lines.append("无记录。")
-        else:
-            for row in records:
-                lines.append(
-                    f"ID={row['id']} | 用户ID={row['user_id']} | 姓名={row['name']} | "
-                    f"维度={row['dim']} | 录入时间={row['created_at']}"
-                )
-
-            if total > max_records:
-                lines.append(f"……还有 {total - max_records} 条未显示，可用 manage_faces.py list 查看全部。")
-
-        lines.extend([
-            "",
-            "删除说明：",
-            "1. 可在本窗口点击“删除人脸记录”。",
-            "2. 也可命令行执行：python manage_faces.py list",
-            "3. 在主界面添加或删除人脸记录后，系统会自动刷新主程序中的人脸特征缓存。",
-        ])
 
         return "\n".join(lines)
 
@@ -858,52 +1174,82 @@ class MainWindow(QWidget):
             self.append_log(f"查看人脸库失败：{e}")
             QMessageBox.warning(self, "查看失败", f"查看人脸库失败：\n{e}")
 
-    def delete_face_records_dialog(self):
-        help_text = (
-            "请输入删除目标：\n"
-            "1. 删除指定记录ID：1,2,3\n"
-            "2. 删除某个用户ID全部记录：user:001\n"
-            "3. 删除某个姓名全部记录：name:张三\n"
-            "4. 清空全部记录：all\n"
+
+    def show_themed_message(self, title, text, icon=QMessageBox.Information, buttons=QMessageBox.Ok, default_button=QMessageBox.Ok, parent=None):
+        """显示主界面同款紫色风格提示框。"""
+        dialog = QMessageBox(parent or self)
+        dialog.setWindowTitle(title)
+        dialog.setText(text)
+        dialog.setIcon(icon)
+        dialog.setStandardButtons(buttons)
+        if default_button is not None:
+            dialog.setDefaultButton(default_button)
+        try:
+            dialog.setStyleSheet(THEMED_POPUP_STYLESHEET)
+        except Exception:
+            pass
+        return dialog.exec_()
+
+    def ask_themed_question(self, title, text, default_button=QMessageBox.No, parent=None):
+        """显示主界面同款紫色风格确认框。"""
+        return self.show_themed_message(
+            title=title,
+            text=text,
+            icon=QMessageBox.Question,
+            buttons=QMessageBox.Yes | QMessageBox.No,
+            default_button=default_button,
+            parent=parent,
         )
 
-        text, ok = QInputDialog.getText(self, "删除人脸记录", help_text)
-        if not ok:
+    def delete_face_records_dialog(self):
+        """删除人脸记录：只提供按用户ID删除全部记录、按姓名删除全部记录，并使用主界面同款弹窗风格。"""
+        delete_options = [
+            "删除某个用户ID全部记录",
+            "删除某个姓名全部记录",
+        ]
+
+        select_dialog = DeleteFaceRecordsDialog(self, delete_options)
+        if select_dialog.exec_() != QDialog.Accepted:
             return
 
-        command = text.strip()
-        if not command:
-            return
+        option = select_dialog.selected_option
+        value = select_dialog.input_value
 
         try:
             db = self.get_face_database()
 
-            if command.lower() == "all":
-                target_desc = f"全部 {db.count()} 条人脸特征"
-                delete_func = db.clear
-            elif command.lower().startswith("user:"):
-                user_id = command.split(":", 1)[1].strip()
+            if option == delete_options[0]:
+                user_id = value
                 target_count = len(db.list_faces(user_id=user_id))
-                target_desc = f"用户ID={user_id} 的 {target_count} 条人脸特征"
-                delete_func = lambda: db.delete_by_user_id(user_id)
-            elif command.lower().startswith("name:"):
-                name = command.split(":", 1)[1].strip()
-                target_count = len(db.list_faces(name=name))
-                target_desc = f"姓名={name} 的 {target_count} 条人脸特征"
-                delete_func = lambda: db.delete_by_name(name)
-            else:
-                ids = [item.strip() for item in command.replace("，", ",").split(",") if item.strip()]
-                ids = [int(item) for item in ids]
-                target_count = len([row for row in db.list_faces() if row["id"] in ids])
-                target_desc = f"记录ID={ids} 的 {target_count} 条人脸特征"
-                delete_func = lambda: db.delete_by_ids(ids)
+                if target_count <= 0:
+                    self.show_themed_message(
+                        "没有找到记录",
+                        f"没有找到用户ID={user_id} 的人脸记录。",
+                        icon=QMessageBox.Information,
+                    )
+                    return
 
-            reply = QMessageBox.question(
-                self,
+                target_desc = f"用户ID={user_id} 的全部 {target_count} 条人脸特征"
+                delete_func = lambda: db.delete_by_user_id(user_id)
+
+            else:
+                name = value
+                target_count = len(db.list_faces(name=name))
+                if target_count <= 0:
+                    self.show_themed_message(
+                        "没有找到记录",
+                        f"没有找到姓名={name} 的人脸记录。",
+                        icon=QMessageBox.Information,
+                    )
+                    return
+
+                target_desc = f"姓名={name} 的全部 {target_count} 条人脸特征"
+                delete_func = lambda: db.delete_by_name(name)
+
+            reply = self.ask_themed_question(
                 "确认删除",
                 f"即将删除：{target_desc}。\n删除后不可恢复，是否继续？",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+                default_button=QMessageBox.No,
             )
 
             if reply != QMessageBox.Yes:
@@ -913,15 +1259,19 @@ class MainWindow(QWidget):
             known_count = self.refresh_face_database_cache()
 
             self.append_log(f"已删除 {deleted} 条人脸特征，人脸库已自动刷新，当前 {known_count} 条人脸特征。")
-            QMessageBox.information(
-                self,
+            self.show_themed_message(
                 "删除完成",
-                f"已删除 {deleted} 条人脸特征。\n人脸库已自动刷新，当前共有 {known_count} 条人脸特征。"
+                f"已删除 {deleted} 条人脸特征。\n人脸库已自动刷新，当前共有 {known_count} 条人脸特征。",
+                icon=QMessageBox.Information,
             )
 
         except Exception as e:
             self.append_log(f"删除人脸记录失败：{e}")
-            QMessageBox.warning(self, "删除失败", f"删除人脸记录失败：\n{e}")
+            self.show_themed_message(
+                "删除失败",
+                f"删除人脸记录失败：\n{e}",
+                icon=QMessageBox.Warning,
+            )
 
     def init_qq(self):
         try:
