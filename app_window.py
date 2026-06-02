@@ -754,6 +754,7 @@ class MainWindow(QWidget):
         video_layout.addWidget(self.image_label, stretch=1)
 
         # ===== 右侧信息与控制区域 =====
+        # 人脸管理按钮会放到左侧视频画面下方；右侧控制面板只保留 4 个主控制按钮。
         self.info_text = QTextEdit()
         self.info_text.setObjectName("InfoText")
         self.info_text.setReadOnly(True)
@@ -804,6 +805,14 @@ class MainWindow(QWidget):
         self.btn_delete_faces.clicked.connect(self.delete_face_records_dialog)
         self.btn_add_face.clicked.connect(self.add_face_record_dialog)
 
+        face_buttons_layout = QHBoxLayout()
+        face_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        face_buttons_layout.setSpacing(10)
+        face_buttons_layout.addWidget(self.btn_show_faces, stretch=1)
+        face_buttons_layout.addWidget(self.btn_delete_faces, stretch=1)
+        face_buttons_layout.addWidget(self.btn_add_face, stretch=1)
+        video_layout.addLayout(face_buttons_layout)
+
         buttons_layout = QVBoxLayout()
         buttons_layout.setContentsMargins(0, 0, 0, 0)
         buttons_layout.setSpacing(8)
@@ -811,9 +820,6 @@ class MainWindow(QWidget):
         buttons_layout.addWidget(self.btn_exit)
         buttons_layout.addWidget(self.btn_start_qq)
         buttons_layout.addWidget(self.btn_stop_qq)
-        buttons_layout.addWidget(self.btn_show_faces)
-        buttons_layout.addWidget(self.btn_delete_faces)
-        buttons_layout.addWidget(self.btn_add_face)
 
         right_card = QFrame()
         right_card.setObjectName("SideCard")
