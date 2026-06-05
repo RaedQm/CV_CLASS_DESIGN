@@ -286,19 +286,19 @@ def recognize_pose(skeleton):
     # 仍然保留 fall_score >= 3，避免把普通坐姿、下蹲直接误报为跌倒。
     fall_score = 0
 
-    # 躯干接近水平：由 65° 放宽到 60°，更容易识别侧倒/半躺。
+    # 躯干接近水平
     if torso_angle > 60:
         fall_score += 1
 
-    # 竖直高度明显降低：由 700 / 1.45 放宽到 780 / 1.55。
+    # 竖直高度明显降低
     if body_height_y < max(780.0, torso_length * 1.55):
         fall_score += 1
 
-    # 水平方向展开明显大于竖直高度：由 0.9 放宽到 0.8。
+    # 水平方向展开明显大于竖直高度
     if body_horizontal_extent > body_height_y * 0.8:
         fall_score += 1
 
-    # 头部和骨盆高度接近，常见于躺倒：由 280 / 0.55 放宽到 330 / 0.65。
+    # 头部和骨盆高度接近，常见于躺倒
     if abs(head[1] - pelvis[1]) < max(330.0, torso_length * 0.65):
         fall_score += 1
 
